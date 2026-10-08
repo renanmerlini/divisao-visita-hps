@@ -924,89 +924,63 @@ L.divide = function (patients, docs, history, fixed) {
     if (kept) res.notes.push({ t: 'regra', s: `${kept} paciente(s) mantido(s) com o mesmo médico dos dias anteriores (memória das divisões).` });
     if (skipped) res.notes.push({ t: 'regra', s: `${skipped} paciente(s) com histórico de outro dia não couberam na cota do médico e foram redistribuídos (regra 2).` });
   }
-  // 3-5. cotas por categoria
+  // 3. preenchimento por posto (unidade): cada médico o mais concentrado possível;
+  //    equilíbrio CM/cirúrgico e RP/VS só como critério secundário
   const free = patients.filter(p => !res.assign.has(p));
-  const pool = { CM_RP: 0, CM_VS: 0, ES_RP: 0, ES_VS: 0 };
-  for (const p of free) pool[cat(p)]++;
-  for (const d of st) { d.cap = d.target - d.n; d.q = { CM_RP: 0, CM_VS: 0, ES_RP: 0, ES_VS: 0 }; }
-  const fill = (c, cands, key) => {
-    while (pool[c] > 0) {
-      const ok = cands.filter(d => d.cap > 0); if (!ok.length) break;
-      ok.sort((a, b) => a[key] - b[key] || b.cap - a.cap || a.i - b.i);
-      const d = ok[0]; d.q[c]++; d[key]++; d.cap--; d.n++; pool[c]--;
-    }
-  };
-  const team = t => st.filter(d => d.team === t), other = t => st.filter(d => d.team !== t);
-  fill('CM_VS', team('VS'), 'cm'); fill('CM_RP', team('RP'), 'cm');
-  const leftCM = { RP: pool.CM_RP, VS: pool.CM_VS };
-  fill('CM_VS', other('VS'), 'cm'); fill('CM_RP', other('RP'), 'cm');
-  fill('ES_VS', team('VS'), 'es'); fill('ES_RP', team('RP'), 'es');
-  const leftES = { RP: pool.ES_RP, VS: pool.ES_VS };
-  fill('ES_VS', other('VS'), 'es'); fill('ES_RP', other('RP'), 'es');
-  for (const c of Object.keys(pool)) fill(c, st, c.startsWith('CM') ? 'cm' : 'es');
-  if (leftCM.VS) res.notes.push({ t: 'regra', s: `${leftCM.VS} CM de VS não couberam com os médicos de VS e foram para a rede própria.` });
-  if (leftCM.RP) res.notes.push({ t: 'regra', s: `${leftCM.RP} CM de rede própria foram para médicos de VS (regra 5).` });
-  if (leftES.VS) res.notes.push({ t: 'regra', s: `${leftES.VS} especialidades de VS foram para a rede própria.` });
-  if (leftES.RP) res.notes.push({ t: 'regra', s: `${leftES.RP} especialidades de rede própria foram para médicos de VS (regra 5).` });
-  // 6. alocação com preferência de andar
-  const floorsCount = {}; for (const p of patients) floorsCount[p.floor] = (floorsCount[p.floor] || 0) + 1;
-  for (const d of st) {
-    const fc = {}; for (const p of [...d.star, ...d.cont]) fc[p.floor] = (fc[p.floor] || 0) + 1;
-    const best = Object.entries(fc).sort((a, b) => b[1] - a[1])[0]; d.home = best ? best[0] : null;
-  }
-  for (const d of [...st].filter(d => !d.home).sort((a, b) => b.target - a.target)) {
-    const demand = {}; for (const f of Object.keys(floorsCount)) demand[f] = floorsCount[f] - st.filter(x => x.home === f).reduce((s, x) => s + x.target, 0);
-    d.home = Object.entries(demand).sort((a, b) => b[1] - a[1])[0]?.[0] || '4';
-  }
-  const rooms = d => [...res.assign.entries()].filter(([, i]) => i === d.i).map(([p]) => +p.room);
-  for (const c of ['CM_RP', 'CM_VS', 'ES_RP', 'ES_VS']) {
-    let left = free.filter(p => cat(p) === c && !res.assign.has(p));
-    while (left.length) {
-      let best = null;
-      for (const d of st) {
-        if (d.q[c] <= 0) continue;
-        const rs = rooms(d);
-        for (const p of left) {
-          const dist = rs.length ? Math.min(...rs.map(r => Math.abs(r - +p.room))) : 0;
-          const sc = (p.floor === d.home ? 0 : 1000) + dist - d.q[c] * 0.01;
-          if (!best || sc < best.sc) best = { sc, d, p };
-        }
-      }
-      if (!best) break;
-      res.assign.set(best.p, best.d.i); best.d.q[c]--; left = left.filter(p => p !== best.p);
-    }
-  }
-  // melhoria por trocas (mesma categoria; especialidades entre médicos de RP)
+  const locked = new Set(patients.filter(p => res.assign.has(p)));
+  for (const d of st) d.cap = d.target - d.n;
+  const unitsAll = [...new Set(patients.map(p => p.unit))].sort();
+  const totalCM = patients.filter(p => p.group === 'CM').length, pCM = N ? totalCM / N : 0;
   const docOf = p => res.assign.get(p);
-  const center = i => { const rs = patients.filter(p => docOf(p) === i).map(p => +p.room).sort((a, b) => a - b); return rs.length ? rs[Math.floor(rs.length / 2)] : 0; };
-  const cost = (p, i, c) => (p.floor !== st[i].home ? 100 : 0) + Math.min(60, Math.abs(+p.room - c[i])) / 10;
-  const swappable = (p, q) => {
-    const a = st[docOf(p)], b = st[docOf(q)];
-    if (a === b || p.star || q.star || p.group !== q.group) return false;
-    if (p.team === q.team) return true;
-    return p.group === 'ESP' && a.team === 'RP' && b.team === 'RP';
+  const mine = i => patients.filter(p => docOf(p) === i);
+  const unitCount = (i, u) => patients.filter(p => docOf(p) === i && p.unit === u).length;
+  const mainUnit = i => { let best = null, bc = -1; for (const u of unitsAll) { const c = unitCount(i, u); if (c > bc) { bc = c; best = u; } } return bc > 0 ? best : null; };
+  // escolha inicial em blocos: médico com mais afinidade pega o posto inteiro (ou o que couber)
+  let guard = 0;
+  while (free.some(p => !res.assign.has(p)) && guard++ < 500) {
+    let best = null;
+    for (const d of st) {
+      if (d.cap <= 0) continue;
+      const mu = mainUnit(d.i);
+      for (const u of unitsAll) {
+        const avail = free.filter(p => !res.assign.has(p) && p.unit === u).length;
+        if (!avail) continue;
+        const sc = unitCount(d.i, u) * 100 + (mu && mu[0] === u[0] ? 50 : 0) + (mu ? 0 : 20) + Math.min(avail, d.cap) * 2 + d.cap * 0.1;
+        if (!best || sc > best.sc) best = { sc, d, u, avail };
+      }
+    }
+    if (!best) break;
+    const pool = free.filter(p => !res.assign.has(p) && p.unit === best.u)
+      .sort((a, b) => (a.team === best.d.team ? 0 : 1) - (b.team === best.d.team ? 0 : 1) || a.bed.localeCompare(b.bed, 'pt', { numeric: true }));
+    const k = Math.min(best.d.cap, pool.length);
+    for (let j = 0; j < k; j++) { res.assign.set(pool[j], best.d.i); best.d.cap--; }
+  }
+  // custo: posto primeiro, depois equilíbrio CM/cirúrgico e equipe RP/VS
+  const costDoc = (i, ps) => {
+    if (!ps.length) return 0;
+    const cnt = {}; for (const p of ps) cnt[p.unit] = (cnt[p.unit] || 0) + 1;
+    const us = Object.keys(cnt), top = Math.max(...Object.values(cnt));
+    const floors = new Set(us.map(u => u[0])).size;
+    const cm = ps.filter(p => p.group === 'CM').length;
+    const wrongTeam = ps.filter(p => p.team !== st[i].team).length;
+    return 100 * (us.length - 1) + 30 * (floors - 1) + 3 * (ps.length - top) + 4 * Math.abs(cm - ps.length * pCM) + 1.5 * wrongTeam;
   };
-  for (let pass = 0; pass < 30; pass++) {
+  for (let pass = 0; pass < 40; pass++) {
     let improved = false;
-    const c = st.map(d => center(d.i));
     for (const p of free) for (const q of free) {
-      if (!swappable(p, q)) continue;
       const a = docOf(p), b = docOf(q);
-      const delta = cost(p, b, c) + cost(q, a, c) - cost(p, a, c) - cost(q, b, c);
-      if (delta < -0.5) { res.assign.set(p, b); res.assign.set(q, a); improved = true; }
+      if (a === b || a === undefined || b === undefined) continue;
+      const A = mine(a), B = mine(b);
+      const before = costDoc(a, A) + costDoc(b, B);
+      const A2 = A.filter(x => x !== p).concat(q), B2 = B.filter(x => x !== q).concat(p);
+      if (costDoc(a, A2) + costDoc(b, B2) < before - 0.01) { res.assign.set(p, b); res.assign.set(q, a); improved = true; }
     }
     if (!improved) break;
   }
-  // notas de regra
-  for (const t of ['RP', 'VS']) {
-    const ts = team(t); if (ts.length < 2) continue;
-    const esc = ts.map(d => patients.filter(p => res.assign.get(p) === d.i && p.group === 'ESP').length);
-    if (Math.max(...esc) - Math.min(...esc) > 0) res.notes.push({ t: 'regra', s: `Especialidades na ${t} ficaram ${esc.join('/')}: com CM dividido primeiro (regra 3), a diferença de 1 sobrou nas especialidades.` });
-  }
-  for (const d of st) {
-    const fl = new Set(patients.filter(p => res.assign.get(p) === d.i).map(p => p.floor));
-    if (fl.size > 1) res.notes.push({ t: 'andar', s: `${d.name} ficou em mais de um andar.` });
-  }
+  // notas
+  const cross = { CM: 0, ESP: 0 };
+  for (const p of free) { const d = st[docOf(p)]; if (d && d.team !== p.team) cross[p.group === 'CM' ? 'CM' : 'ESP']++; }
+  if (cross.CM || cross.ESP) res.notes.push({ t: 'regra', s: `Para manter cada médico no mesmo posto, ${cross.CM + cross.ESP} paciente(s) ficaram com médico da outra equipe (RP/VS).` });
   res.targets = st.map(d => d.target);
   return res;
 };
@@ -1290,11 +1264,11 @@ function allNotes() {
     const idx = S.activeDocs.map((d, i) => d.team === t ? i : -1).filter(i => i >= 0);
     if (idx.length < 2) continue;
     const e = idx.map(i => stats(i).esp), c = idx.map(i => stats(i).cm);
-    if (Math.max(...e) !== Math.min(...e)) out.regra.push(`Na ${t}, CM ficou ${c.join('/')} e especialidades ${e.join('/')}. Com CM dividido primeiro (regra 3), a diferença sobrou nas especialidades.`);
+    if (Math.max(...e) !== Math.min(...e)) out.regra.push(`Na ${t}, CM ficou ${c.join('/')} e cirúrgicos ${e.join('/')}: o posto teve prioridade sobre o equilíbrio CM/cirúrgico.`);
   }
   if (S.histUsed && S.histUsed.length) out.regra.unshift(`Memória usada: divisões de ${S.histUsed.join(', ')}.`);
   if (S.moved) out.regra.push(`${S.moved} paciente(s) movido(s) manualmente depois da divisão automática.`);
-  S.activeDocs.forEach((d, i) => { const s = stats(i); if (s.f4 && s.f6) out.regra.push(`${d.name}: ${s.f4} no 4º andar e ${s.f6} no 6º.`); });
+  S.activeDocs.forEach((d, i) => { const s = stats(i); if (s.units.length > 1) out.regra.push(`${d.name}: ` + s.units.map(u => `${u} (${s.ps.filter(p => p.unit === u).length})`).join(', ') + '.'); });
   for (const p of S.patients) {
     if (p.manual) continue;
     for (const n of p.notes) {
