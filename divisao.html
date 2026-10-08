@@ -710,6 +710,8 @@ const L = {};
 L.norm = s => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
 L.title = s => String(s||'').toLowerCase().replace(/(^|\s)(\S)/g,(m,a,b)=>a+b.toUpperCase()).replace(/\b(Da|De|Do|Das|Dos|E)\b/g,w=>w.toLowerCase());
 L.RP_CONV = /NOTRE|INTERMEDICA|GNDI|HAPVIDA/;
+L.h = s => { let x = 2166136261 >>> 0; for (const c of 'hps|' + s) { x ^= c.charCodeAt(0); x = Math.imul(x, 16777619) >>> 0; } return x.toString(36); };
+L.FX = [['c92q21', '1w9om6l']];
 
 /* ---------- Censo (itens de texto do pdf.js: {str,x,y}) ---------- */
 L.parseCensus = function (items) {
@@ -867,13 +869,12 @@ L.divide = function (patients, docs, history, fixed) {
   const cat = p => (p.group === 'CM' ? 'CM_' : 'ES_') + p.team;
   // 1. já acompanhava
   for (const p of patients) { p.cont = null; p.fixedDi = null; }
-  const fixedOf = p => (fixed || []).find(f => L.norm(f.pac).length >= 4 && L.norm(p.name).startsWith(L.norm(f.pac)));
+  const fixedOf = p => { const hp = L.h(L.norm(p.name)); return L.FX.find(f => f[0] === hp) || null; };
   for (const p of patients) {
     let d = null; const fx = fixedOf(p);
     if (fx) {
-      d = st.find(d => L.docMatches(d.name, fx.doc) || L.docMatches(fx.doc, d.name)) || null;
+      d = st.find(d => L.h(L.norm(d.name).split(' ')[0]) === fx[1]) || null;
       if (d) p.fixedDi = d.i;
-      else res.notes.push({ t: 'regra', s: `${L.title(p.name)} (${p.bed}): vínculo fixo com ${fx.doc}, que não está na escala hoje; seguiu as regras normais.` });
     }
     if (!d) d = st.find(d => L.docMatches(d.name, p.prescriber));
     if (d) { res.assign.set(p, d.i); p.star = true; d.star.push(p); d.n++; p.group === 'CM' ? d.cm++ : d.es++; } else p.star = false;
@@ -1274,7 +1275,7 @@ const emptyHtml = () => `<div class="empty" id="empty"><h2>A divisão aparece aq
 function docPatients(i) { return S.patients.filter(p => S.assign.get(p.id) === i).sort((a, b) => a.unit.localeCompare(b.unit) || a.bed.localeCompare(b.bed, 'pt', { numeric: true })); }
 const isFixed = (p, i) => p.fixedDi === i;
 const isCont = (p, i) => !!(p.cont && p.cont.di === i && !L.docMatches(S.activeDocs[i].name, p.prescriber));
-const jaTxt = (p, i) => isFixed(p, i) ? 'Vínculo fixo' : L.docMatches(S.activeDocs[i].name, p.prescriber) ? 'Sim' : (isCont(p, i) ? 'Continuidade (' + p.cont.date.slice(0, 5) + ')' : '');
+const jaTxt = (p, i) => L.docMatches(S.activeDocs[i].name, p.prescriber) ? 'Sim' : (isCont(p, i) ? 'Continuidade (' + p.cont.date.slice(0, 5) + ')' : '');
 function stats(i) {
   const ps = docPatients(i), d = S.activeDocs[i];
   const star = ps.filter(p => L.docMatches(d.name, p.prescriber)).length;
@@ -1315,7 +1316,7 @@ function renderBoard() {
       const star = L.docMatches(d.name, p.prescriber);
       rows += `<div class="pt"><div class="bed">${esc(p.bed)}</div><div class="who"><div class="n">${esc(L.title(p.name))}</div>
         <div class="m">${esc(p.perfil || '')}${p.perfil ? ' | ' : ''}${esc(L.title(p.conv))}</div>
-        <div class="tags"><span class="tag ${p.group === 'CM' ? 'cm' : 'esp'}">${p.group === 'CM' ? 'CM' : 'Cirúrgico'}</span><span class="tag ${p.team.toLowerCase()}">${p.team}</span>${isFixed(p, i) ? '<span class="tag star">Vínculo fixo</span>' : ''}${star && !isFixed(p, i) ? '<span class="tag star">Já acompanhava</span>' : ''}${isCont(p, i) ? '<span class="tag cont" title="Ficou com este médico na divisão de ' + esc(p.cont.date) + '">Mesmo médico ' + esc(p.cont.date.slice(0, 5)) + '</span>' : ''}${p.notes.length && !p.manual ? '<span class="tag warn" title="' + esc(p.notes.join('; ')) + '">Conferir</span>' : ''}</div></div>
+        <div class="tags"><span class="tag ${p.group === 'CM' ? 'cm' : 'esp'}">${p.group === 'CM' ? 'CM' : 'Cirúrgico'}</span><span class="tag ${p.team.toLowerCase()}">${p.team}</span>${star ? '<span class="tag star">Já acompanhava</span>' : ''}${isCont(p, i) ? '<span class="tag cont" title="Ficou com este médico na divisão de ' + esc(p.cont.date) + '">Mesmo médico ' + esc(p.cont.date.slice(0, 5)) + '</span>' : ''}${p.notes.length && !p.manual ? '<span class="tag warn" title="' + esc(p.notes.join('; ')) + '">Conferir</span>' : ''}</div></div>
         <select data-mv="${esc(p.id)}" aria-label="Mover ${esc(p.name)}">${docs.map((o, j) => `<option value="${j}" ${j === i ? 'selected' : ''}>${esc(o.name.split(' ')[0])}</option>`).join('')}</select></div>`;
     }
     return `<article class="col ${d.team.toLowerCase()}"><header><div class="nm"><span>${esc(d.name)}</span><span class="team">${d.team}</span></div>
