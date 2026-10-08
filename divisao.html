@@ -713,6 +713,7 @@ L.RP_CONV = /NOTRE|INTERMEDICA|GNDI|HAPVIDA/;
 L.h = s => { let x = 2166136261 >>> 0; for (const c of 'hps|' + s) { x ^= c.charCodeAt(0); x = Math.imul(x, 16777619) >>> 0; } return x.toString(36); };
 L.FX = [['c92q21', '1w9om6l']];
 L.PREF = [['1vekfli', '4'], ['1w9om6l', '4']];
+L.FXNOT = [['c92q21', ['1ksn3zk', '1vekfli']]];
 
 /* ---------- Censo (itens de texto do pdf.js: {str,x,y}) ---------- */
 L.parseCensus = function (items) {
@@ -971,6 +972,16 @@ L.divide = function (patients, docs, history, fixed) {
       if (cost(a, A2) + cost(b, B2) < cost(a, A) + cost(b, B) - 0.01) { res.assign.set(a_, b); res.assign.set(b_, a); imp = true; }
     }
     if (!imp) break;
+  }
+  // 8. restrições ocultas: paciente que não pode ficar com certos médicos
+  for (const p of patients) {
+    if (p.fixedDi != null) continue;
+    const rule = L.FXNOT.find(r => r[0] === L.h(L.norm(p.name))); if (!rule) continue;
+    const banned = i => rule[1].includes(L.h(L.norm(st[i].name).split(' ')[0]));
+    const cur = res.assign.get(p); if (!banned(cur)) continue;
+    const opts = patients.filter(q => q !== p && q.fixedDi == null && !banned(res.assign.get(q)))
+      .sort((a, b) => (fl(a) === fl(p) ? 0 : 1) - (fl(b) === fl(p) ? 0 : 1) || (a.unit === p.unit ? 0 : 1) - (b.unit === p.unit ? 0 : 1) || (a.star || a.cont ? 1 : 0) - (b.star || b.cont ? 1 : 0) || (a.group === p.group ? 0 : 1) - (b.group === p.group ? 0 : 1));
+    if (opts.length) { const q = opts[0], other = res.assign.get(q); res.assign.set(p, other); res.assign.set(q, cur); p.star = false; p.cont = null; q.star = false; q.cont = null; }
   }
   const cross = patients.filter(p => p.fixedDi == null && st[res.assign.get(p)].team !== p.team).length;
   if (cross) res.notes.push({ t: 'regra', s: `Para manter cada médico no mesmo andar e posto, ${cross} paciente(s) ficaram com médico da outra equipe (RP/VS).` });
