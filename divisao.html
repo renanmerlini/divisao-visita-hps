@@ -712,6 +712,7 @@ L.title = s => String(s||'').toLowerCase().replace(/(^|\s)(\S)/g,(m,a,b)=>a+b.to
 L.RP_CONV = /NOTRE|INTERMEDICA|GNDI|HAPVIDA/;
 L.h = s => { let x = 2166136261 >>> 0; for (const c of 'hps|' + s) { x ^= c.charCodeAt(0); x = Math.imul(x, 16777619) >>> 0; } return x.toString(36); };
 L.FX = [['c92q21', '1w9om6l']];
+L.PREF = [['1vekfli', '4'], ['1w9om6l', '4']];
 
 /* ---------- Censo (itens de texto do pdf.js: {str,x,y}) ---------- */
 L.parseCensus = function (items) {
@@ -905,18 +906,19 @@ L.divide = function (patients, docs, history, fixed) {
   if (floors.length <= 1) { for (const d of st) q[d.i][floors[0]] = d.cap; }
   else {
     const [A, B] = floors, nA = freeP().filter(p => fl(p) === A).length;
+    const prefOf = d => { const h = L.h(L.norm(d.name).split(' ')[0]); const x = L.PREF.find(p => p[0] === h); return x ? x[1] : null; };
     let best = null;
     for (let m = 0; m < (1 << D); m++) {
-      let sA = 0, kn = 0;
-      for (const d of st) { const onA = (m >> d.i) & 1; if (onA) sA += d.cap; kn += K(d.i, onA ? A : B); }
-      const sc = Math.abs(sA - nA) * 1000 - kn;
+      let sA = 0, kn = 0, pf = 0;
+      for (const d of st) { const onA = (m >> d.i) & 1, f = onA ? A : B; if (onA) sA += d.cap; kn += K(d.i, f); const pr = prefOf(d); if (pr) pf += pr === f ? 1 : -1; }
+      const sc = Math.abs(sA - nA) * 1000 - pf * 3000 - kn;
       if (!best || sc < best.sc) best = { sc, m, sA };
     }
     for (const d of st) q[d.i][((best.m >> d.i) & 1) ? A : B] = d.cap;
     let diff = best.sA - nA;                       // >0: sobra vaga no A, falta no B
     const from = diff > 0 ? A : B, to = diff > 0 ? B : A; diff = Math.abs(diff);
     while (diff > 0) {
-      const c = st.filter(d => (q[d.i][from] || 0) > 0).sort((a, b) => K(b.i, to) - K(a.i, to) || (q[b.i][from] - q[a.i][from]))[0];
+      const c = st.filter(d => (q[d.i][from] || 0) > 0).sort((a, b) => (prefOf(a) === from ? 1 : 0) - (prefOf(b) === from ? 1 : 0) || K(b.i, to) - K(a.i, to) || (q[b.i][from] - q[a.i][from]))[0];
       if (!c) break;
       const x = Math.min(diff, q[c.i][from]); q[c.i][from] -= x; q[c.i][to] = (q[c.i][to] || 0) + x; diff -= x;
     }
