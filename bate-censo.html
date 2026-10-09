@@ -241,6 +241,9 @@ fieldset.ro{border:0;margin:0;padding:0;min-width:0;display:grid;gap:7px}
 .legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
 @media (min-width:700px){.tools{position:sticky;top:env(safe-area-inset-top,0px)}}
 @media (prefers-reduced-motion:no-preference){.pt{transition:border-color .2s}}
+.sitenav{display:flex;gap:4px;background:#EDF1F8;border-radius:999px;padding:3px}
+.sitenav a{padding:6px 14px;border-radius:999px;font-size:14px;font-weight:700;color:#5B6478;text-decoration:none;white-space:nowrap}
+.sitenav a[aria-current=page]{background:#1739AA;color:#FFFFFF}
 </style>
 </head>
 <body>
@@ -672,6 +675,7 @@ drom8JEiSYEeyZeFNVEkMjBwG06O/wDhk2G9jLFQDOEyCrgDNeDyOkXd7oTw85PHLe5RhJyEuCBFOhjQ
 KKf9aHfV/q7Vr/VUAJnZREXhIkSDDzvf6M9hXjJFwiKEDQ32qAAEsxFjSNmXAs41CkyzBQ/f8JeUmQYFpYftkD2bJdcoVq+vXq+LVE/lUAnaeERQRtVEUmOl
 dSAmiECD0Adivpo5aHfvbi1o8Wx9mfpHQ6QYIEM8b/A0LLcrV1IkCNAAAAAElFTkSuQmCC"><span class="sep" aria-hidden="true"></span>
     <div><h1>Bate censo</h1><p class="sub">Hospital Paulo Sacramento · 4A, 4B, 6A e 6B</p></div></div>
+  <nav class="sitenav" id="sitenav" aria-label="Telas"><a href="divisao.html" data-nav="divisao.html">Divisão</a><a href="bate-censo.html" data-nav="bate-censo.html" aria-current="page">Bate censo</a></nav>
   <div class="dayctl">
     <label for="daySel" class="sr">Dia</label><select id="daySel" hidden></select>
     <span class="sync" id="sync"><i></i><span id="syncTxt">Conectando…</span></span>
@@ -1328,6 +1332,7 @@ async function start() {
   if (S.store.kind === 'local') { await new Promise(r => setTimeout(r, 60)); useHandoff(); }
 }
 start();
+if (window.claude) $('sitenav').hidden = true; else document.querySelectorAll('[data-nav]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); location.href = a.dataset.nav + '?v=' + Date.now(); }));
 </script>
 
 </body>
