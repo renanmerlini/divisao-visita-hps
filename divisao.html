@@ -1298,7 +1298,7 @@ function renderBoard() {
   const li = a => a.map(x => `<li>${esc(x)}</li>`).join('');
   $('board').innerHTML = `
     <div class="summary"><div><h2>${N} pacientes para ${docs.length} médicos</h2><p>${esc(date)}. Use a lista em cada paciente para mover entre médicos.</p></div>
-      <div class="row" id="exp">${window.claude ? '' : '<a class="btn" style="text-decoration:none;color:var(--brand)" href="bate-censo.html">Abrir bate censo</a>'}<button class="btn" id="xl">Baixar Excel</button><button class="btn" id="pdf">Baixar PDF (planilha)</button></div></div>
+      <div class="row" id="exp">${window.claude ? '' : '<a class="btn" style="text-decoration:none;color:var(--brand)" href="bate-censo.html?v=' + Date.now() + '">Abrir bate censo</a>'}<button class="btn" id="xl">Baixar Excel</button><button class="btn" id="pdf">Baixar PDF (planilha)</button></div></div>
     <p class="status" id="expStatus"></p>
     <div class="wa"><div class="row" style="justify-content:space-between"><b>Texto para o WhatsApp</b><button class="btn primary" style="width:auto" id="waCopy">Copiar texto</button></div>
       <p class="status" id="waStatus"></p>
