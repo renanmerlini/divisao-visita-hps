@@ -867,124 +867,104 @@ L.divide = function (patients, docs, history, fixed) {
   const D = docs.length, N = patients.length;
   const res = { assign: new Map(), notes: [], targets: [], histUsed: [] };
   if (!D) return res;
-  const st = docs.map((d, i) => ({ i, ...d }));
+  const st = docs.map((d, i) => ({ i, ...d, n: 0 }));
   const fl = p => p.floor;
   const docIdx = name => st.findIndex(d => L.docMatches(d.name, name) || L.docMatches(name, d.name));
-  for (const p of patients) { p.cont = null; p.fixedDi = null; p.star = false; p.known = null; }
-  // 1. vínculo fixo (única exceção ao andar)
+  const prefOf = d => { const h = L.h(L.norm(d.name).split(' ')[0]); const x = L.PREF.find(p => p[0] === h); return x ? x[1] : null; };
+  const put = (p, i) => { res.assign.set(p, i); st[i].n++; };
+  for (const p of patients) { p.cont = null; p.fixedDi = null; p.star = false; }
+  // 1. vínculo fixo
   for (const p of patients) {
     const hp = L.h(L.norm(p.name)), fx = L.FX.find(f => f[0] === hp); if (!fx) continue;
     const d = st.find(d => L.h(L.norm(d.name).split(' ')[0]) === fx[1]);
-    if (d) { p.fixedDi = d.i; res.assign.set(p, d.i); }
+    if (d) { p.fixedDi = d.i; put(p, d.i); }
   }
-  // 2. quem já conhece o paciente: censo (quem passou visita ontem) e memória (mais recente)
-  if (history && history.length) res.histUsed = history.map(h => h.date);
+  const bannedFor = p => { const r = L.FXNOT.find(r => r[0] === L.h(L.norm(p.name))); return r ? (i => r[1].includes(L.h(L.norm(st[i].name).split(' ')[0]))) : (() => false); };
+  // 2a. quem passou visita ontem (censo) fica com o paciente
   for (const p of patients) {
     if (res.assign.has(p)) continue;
     const s = st.findIndex(d => L.docMatches(d.name, p.prescriber));
-    if (s >= 0) { p.known = { di: s, sc: 1000, src: 'censo' }; continue; }
-    if (!history || !history.length) continue;
-    const nn = L.norm(p.name), sc = new Map(), last = new Map();
-    history.forEach((day, k) => {
-      const r = day.rows.find(r => (r.atend && p.atend && r.atend === p.atend) || (nn.length >= 6 && r.nn && (r.nn.startsWith(nn) || nn.startsWith(r.nn))));
-      if (!r) return; const di = docIdx(r.doc); if (di < 0) return;
-      if (!sc.has(di)) { sc.set(di, 100 - k); last.set(di, day.date); }
-      sc.set(di, sc.get(di) + 0.01);
-    });
-    if (sc.size) { const [di, v] = [...sc.entries()].sort((a, b) => b[1] - a[1])[0]; p.known = { di, sc: v, src: 'memória', date: last.get(di) }; }
+    if (s >= 0 && !bannedFor(p)(s)) { p.star = true; put(p, s); }
   }
-  // 3. total justo (diferença máxima de 1)
+  // total justo (diferença máxima de 1)
   const base = Math.floor(N / D); let extra = N % D;
   for (const d of st) d.target = base;
-  const kc = i => patients.filter(p => p.known && p.known.di === i).length;
-  [...st].sort((a, b) => (a.team === 'VS' ? 0 : 1) - (b.team === 'VS' ? 0 : 1) || kc(b.i) - kc(a.i)).forEach(d => { if (extra > 0) { d.target++; extra--; } });
-  for (const d of st) d.cap = Math.max(0, d.target - patients.filter(p => p.fixedDi === d.i).length);
-  // 4. andar: cada médico em um andar; quando a conta não fecha, o mínimo possível divide andares
-  const floors = [...new Set(patients.map(fl))].sort();
-  const freeP = () => patients.filter(p => !res.assign.has(p));
-  const K = (i, f) => patients.filter(p => !res.assign.has(p) && p.known && p.known.di === i && fl(p) === f).length;
-  const q = st.map(() => ({}));
-  if (floors.length <= 1) { for (const d of st) q[d.i][floors[0]] = d.cap; }
-  else {
-    const [A, B] = floors, nA = freeP().filter(p => fl(p) === A).length;
-    const prefOf = d => { const h = L.h(L.norm(d.name).split(' ')[0]); const x = L.PREF.find(p => p[0] === h); return x ? x[1] : null; };
-    let best = null;
-    for (let m = 0; m < (1 << D); m++) {
-      let sA = 0, kn = 0, pf = 0;
-      for (const d of st) { const onA = (m >> d.i) & 1, f = onA ? A : B; if (onA) sA += d.cap; kn += K(d.i, f); const pr = prefOf(d); if (pr) pf += pr === f ? 1 : -1; }
-      const sc = Math.abs(sA - nA) * 1000 - pf * 3000 - kn;
-      if (!best || sc < best.sc) best = { sc, m, sA };
-    }
-    for (const d of st) q[d.i][((best.m >> d.i) & 1) ? A : B] = d.cap;
-    let diff = best.sA - nA;                       // >0: sobra vaga no A, falta no B
-    const from = diff > 0 ? A : B, to = diff > 0 ? B : A; diff = Math.abs(diff);
-    while (diff > 0) {
-      const c = st.filter(d => (q[d.i][from] || 0) > 0).sort((a, b) => (prefOf(a) === from ? 1 : 0) - (prefOf(b) === from ? 1 : 0) || K(b.i, to) - K(a.i, to) || (q[b.i][from] - q[a.i][from]))[0];
-      if (!c) break;
-      const x = Math.min(diff, q[c.i][from]); q[c.i][from] -= x; q[c.i][to] = (q[c.i][to] || 0) + x; diff -= x;
-    }
+  [...st].sort((a, b) => (a.team === 'VS' ? 0 : 1) - (b.team === 'VS' ? 0 : 1) || b.n - a.n).forEach(d => { if (extra > 0) { d.target++; extra--; } });
+  for (const d of st) if (d.n > d.target) {
+    let over = d.n - d.target; d.target = d.n;
+    res.notes.push({ t: 'regra', s: `${d.name} já acompanhava ${d.n} pacientes, acima da cota; manteve todos.` });
+    while (over > 0) { const o = st.filter(x => x !== d && x.target > x.n).sort((a, b) => b.target - a.target)[0]; if (!o) break; o.target--; over--; }
   }
-  // 5. dentro do andar: quem já conhecia fica com o paciente, se tiver vaga naquele andar
-  let released = 0;
-  for (const p of freeP().filter(p => p.known).sort((a, b) => b.known.sc - a.known.sc)) {
-    const i = p.known.di, f = fl(p);
-    if ((q[i][f] || 0) > 0) { res.assign.set(p, i); q[i][f]--; if (p.known.src === 'censo') p.star = true; else p.cont = { di: i, date: p.known.date }; }
-    else released++;
+  // 2b. memória: quem viu o paciente mais recentemente nos dias anteriores (até a cota)
+  if (history && history.length) {
+    res.histUsed = history.map(h => h.date);
+    const cands = [];
+    for (const p of patients) {
+      if (res.assign.has(p)) continue;
+      const nn = L.norm(p.name), sc = new Map(), last = new Map();
+      history.forEach((day, k) => {
+        const r = day.rows.find(r => (r.atend && p.atend && r.atend === p.atend) || (nn.length >= 6 && r.nn && (r.nn.startsWith(nn) || nn.startsWith(r.nn))));
+        if (!r) return; const di = docIdx(r.doc); if (di < 0 || bannedFor(p)(di)) return;
+        if (!sc.has(di)) { sc.set(di, 100 - k); last.set(di, day.date); }
+        sc.set(di, sc.get(di) + 0.01);
+      });
+      if (sc.size) { const [di, v] = [...sc.entries()].sort((a, b) => b[1] - a[1])[0]; cands.push({ p, di, v, date: last.get(di) }); }
+    }
+    let kept = 0, skipped = 0;
+    for (const c of cands.sort((a, b) => b.v - a.v)) {
+      if (st[c.di].n >= st[c.di].target) { skipped++; continue; }
+      c.p.cont = { di: c.di, date: c.date }; put(c.p, c.di); kept++;
+    }
+    if (kept) res.notes.push({ t: 'regra', s: `${kept} paciente(s) mantido(s) com o mesmo médico dos dias anteriores (memória).` });
+    if (skipped) res.notes.push({ t: 'regra', s: `${skipped} paciente(s) com histórico não couberam na cota do médico e foram redistribuídos.` });
   }
-  if (released) res.notes.push({ t: 'regra', s: `${released} paciente(s) que o médico já conhecia ficaram com outro médico para manter cada um no mesmo andar.` });
-  const kept = patients.filter(p => p.cont).length;
-  if (kept) res.notes.push({ t: 'regra', s: `${kept} paciente(s) mantido(s) com o mesmo médico dos dias anteriores (memória).` });
-  // 6. completar por posto dentro do andar
+  // 3. restante: mesmo andar e mesmo posto (preferência de andar por médico)
   const units = [...new Set(patients.map(p => p.unit))].sort();
+  const freeP = () => patients.filter(p => !res.assign.has(p));
   const uc = (i, u) => patients.filter(p => res.assign.get(p) === i && p.unit === u).length;
-  for (let g = 0; g < 500; g++) {
+  const fc = (i, f) => patients.filter(p => res.assign.get(p) === i && fl(p) === f).length;
+  const homeFloor = d => { const f4 = fc(d.i, '4'), f6 = fc(d.i, '6'), pr = prefOf(d); if (f4 === f6) return pr || null; return f4 > f6 ? '4' : '6'; };
+  for (let g = 0; g < 600; g++) {
     const left = freeP(); if (!left.length) break;
     let best = null;
-    for (const d of st) for (const u of units) {
-      const f = u[0], cap = q[d.i][f] || 0; if (cap <= 0) continue;
-      const avail = left.filter(p => p.unit === u).length; if (!avail) continue;
-      const sc = uc(d.i, u) * 100 + Math.min(avail, cap) * 2 + cap * 0.1;
-      if (!best || sc > best.sc) best = { sc, d, u, f };
+    for (const d of st) {
+      const cap = d.target - d.n; if (cap <= 0) continue;
+      const hf = homeFloor(d), pr = prefOf(d);
+      for (const u of units) {
+        const pool = left.filter(p => p.unit === u && !bannedFor(p)(d.i)); if (!pool.length) continue;
+        const sc = uc(d.i, u) * 100 + (hf ? (u[0] === hf ? 300 : 0) : (pr && u[0] === pr ? 150 : 0)) + fc(d.i, u[0]) * 10 + Math.min(pool.length, cap) * 2 + cap * 0.1;
+        if (!best || sc > best.sc) best = { sc, d, pool };
+      }
     }
     if (!best) break;
-    const pool = left.filter(p => p.unit === best.u).sort((a, b) => (a.team === best.d.team ? 0 : 1) - (b.team === best.d.team ? 0 : 1) || a.bed.localeCompare(b.bed, 'pt', { numeric: true }));
-    const k = Math.min(q[best.d.i][best.f], pool.length);
-    for (let j = 0; j < k; j++) { res.assign.set(pool[j], best.d.i); q[best.d.i][best.f]--; }
+    const pool = best.pool.sort((a, b) => (a.team === best.d.team ? 0 : 1) - (b.team === best.d.team ? 0 : 1) || a.bed.localeCompare(b.bed, 'pt', { numeric: true }));
+    const k = Math.min(best.d.target - best.d.n, pool.length);
+    for (let j = 0; j < k; j++) put(pool[j], best.d.i);
   }
-  for (const p of freeP()) { const d = st.filter(d => patients.filter(x => res.assign.get(x) === d.i).length < d.target)[0] || st[0]; res.assign.set(p, d.i); }
-  // 7. trocas no mesmo andar: posto e, depois, equilíbrio CM/cirúrgico e RP/VS
+  for (const p of freeP()) { const d = st.filter(d => d.n < d.target && !bannedFor(p)(d.i))[0] || st.filter(d => d.n < d.target)[0] || st[0]; put(p, d.i); }
+  // 4. trocas entre pacientes ainda livres: andar, posto e, por último, CM/cirúrgico e RP/VS
   const movable = patients.filter(p => p.fixedDi == null && !p.star && !p.cont);
   const pCM = N ? patients.filter(p => p.group === 'CM').length / N : 0;
   const mine = i => patients.filter(p => res.assign.get(p) === i);
   const cost = (i, ps) => {
     if (!ps.length) return 0;
     const cnt = {}; for (const p of ps) cnt[p.unit] = (cnt[p.unit] || 0) + 1;
-    const top = Math.max(...Object.values(cnt)), nf = new Set(ps.map(fl)).size;
+    const top = Math.max(...Object.values(cnt)), floors = new Set(ps.map(fl)), pr = prefOf(st[i]);
     const cm = ps.filter(p => p.group === 'CM').length, wrong = ps.filter(p => p.team !== st[i].team).length;
-    return 300 * (nf - 1) + 100 * (Object.keys(cnt).length - 1) + 3 * (ps.length - top) + 4 * Math.abs(cm - ps.length * pCM) + 1.5 * wrong;
+    const ban = ps.filter(p => bannedFor(p)(i)).length;
+    return 10000 * ban + 300 * (floors.size - 1) + 100 * (Object.keys(cnt).length - 1) + 3 * (ps.length - top) + (pr && !floors.has(pr) ? 50 : 0) + 4 * Math.abs(cm - ps.length * pCM) + 1.5 * wrong;
   };
   for (let pass = 0; pass < 40; pass++) {
     let imp = false;
     for (const a_ of movable) for (const b_ of movable) {
-      const a = res.assign.get(a_), b = res.assign.get(b_);
-      if (a === b || fl(a_) !== fl(b_)) continue;
+      const a = res.assign.get(a_), b = res.assign.get(b_); if (a === b) continue;
       const A = mine(a), B = mine(b), A2 = A.filter(x => x !== a_).concat(b_), B2 = B.filter(x => x !== b_).concat(a_);
       if (cost(a, A2) + cost(b, B2) < cost(a, A) + cost(b, B) - 0.01) { res.assign.set(a_, b); res.assign.set(b_, a); imp = true; }
     }
     if (!imp) break;
   }
-  // 8. restrições ocultas: paciente que não pode ficar com certos médicos
-  for (const p of patients) {
-    if (p.fixedDi != null) continue;
-    const rule = L.FXNOT.find(r => r[0] === L.h(L.norm(p.name))); if (!rule) continue;
-    const banned = i => rule[1].includes(L.h(L.norm(st[i].name).split(' ')[0]));
-    const cur = res.assign.get(p); if (!banned(cur)) continue;
-    const opts = patients.filter(q => q !== p && q.fixedDi == null && !banned(res.assign.get(q)))
-      .sort((a, b) => (fl(a) === fl(p) ? 0 : 1) - (fl(b) === fl(p) ? 0 : 1) || (a.unit === p.unit ? 0 : 1) - (b.unit === p.unit ? 0 : 1) || (a.star || a.cont ? 1 : 0) - (b.star || b.cont ? 1 : 0) || (a.group === p.group ? 0 : 1) - (b.group === p.group ? 0 : 1));
-    if (opts.length) { const q = opts[0], other = res.assign.get(q); res.assign.set(p, other); res.assign.set(q, cur); p.star = false; p.cont = null; q.star = false; q.cont = null; }
-  }
   const cross = patients.filter(p => p.fixedDi == null && st[res.assign.get(p)].team !== p.team).length;
-  if (cross) res.notes.push({ t: 'regra', s: `Para manter cada médico no mesmo andar e posto, ${cross} paciente(s) ficaram com médico da outra equipe (RP/VS).` });
+  if (cross) res.notes.push({ t: 'regra', s: `Para manter quem já acompanhava e o mesmo andar/posto, ${cross} paciente(s) ficaram com médico da outra equipe (RP/VS).` });
   res.targets = st.map(d => d.target);
   return res;
 };
@@ -1016,6 +996,19 @@ function saveToday() {
   const date = dday(S.censusDate) || new Date().toLocaleDateString('pt-BR');
   putHistory({ date, rows: S.patients.filter(p => S.assign.has(p.id)).map(p => ({ atend: p.atend, name: p.name, bed: p.bed, group: p.group, doc: S.activeDocs[S.assign.get(p.id)].name, team: S.activeDocs[S.assign.get(p.id)].team })) });
   renderMem();
+  saveHandoff();
+}
+/* entrega para o bate censo (mesmo site, mesmo aparelho) */
+const IDB = {
+  open() { return new Promise((res, rej) => { const r = indexedDB.open('hps-visita', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+  async set(k, v) { const db = await this.open(); return new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); }
+};
+async function saveHandoff() {
+  if (window.claude || !S.raw || !window.indexedDB) return;
+  try {
+    const files = []; for (const f of Object.values(S.raw)) files.push({ name: f.name, type: f.type || '', data: await f.arrayBuffer() });
+    await IDB.set('handoff', { date: dday(S.censusDate), savedAt: new Date().toISOString(), div: waText(), files });
+  } catch (e) {}
 }
 function histForDivide() {
   const today = dkey(S.censusDate);
@@ -1086,6 +1079,7 @@ async function handleFiles(list) {
         const r = await readPdf(f);
         if (!r.unit) throw new Error('não reconheci a unidade');
         S.census[r.unit] = { file: f.name, patients: r.patients };
+        S.raw = S.raw || {}; S.raw[r.unit] = f;
         if (r.date) S.censusDate = r.date;
       } else if (/\.txt$/i.test(f.name)) {
         const days = L.parseDivText(await f.text()); days.forEach(putHistory);
@@ -1095,7 +1089,7 @@ async function handleFiles(list) {
         const imp = importDivision(wb);
         if (imp) { setStatus('goStatus', `Divisão de ${imp} carregada na memória.`); continue; }
         const sheets = {}; for (const n of wb.SheetNames) sheets[n] = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: null, raw: false });
-        S.kanban = L.parseKanban(sheets); S.kanbanName = f.name;
+        S.raw = S.raw || {}; S.raw.kanban = f; S.kanban = L.parseKanban(sheets); S.kanbanName = f.name;
       }
     } catch (e) { setStatus('goStatus', 'Não consegui ler ' + f.name + ': ' + (e.message || e), true); }
   }
@@ -1268,7 +1262,7 @@ function allNotes() {
     const idx = S.activeDocs.map((d, i) => d.team === t ? i : -1).filter(i => i >= 0);
     if (idx.length < 2) continue;
     const e = idx.map(i => stats(i).esp), c = idx.map(i => stats(i).cm);
-    if (Math.max(...e) !== Math.min(...e)) out.regra.push(`Na ${t}, CM ficou ${c.join('/')} e cirúrgicos ${e.join('/')}: andar e posto tiveram prioridade sobre o equilíbrio CM/cirúrgico.`);
+    if (Math.max(...e) !== Math.min(...e)) out.regra.push(`Na ${t}, CM ficou ${c.join('/')} e cirúrgicos ${e.join('/')}: quem já acompanhava e andar/posto tiveram prioridade sobre o equilíbrio CM/cirúrgico.`);
   }
   if (S.histUsed && S.histUsed.length) out.regra.unshift(`Memória usada: divisões de ${S.histUsed.join(', ')}.`);
   if (S.moved) out.regra.push(`${S.moved} paciente(s) movido(s) manualmente depois da divisão automática.`);
@@ -1304,7 +1298,7 @@ function renderBoard() {
   const li = a => a.map(x => `<li>${esc(x)}</li>`).join('');
   $('board').innerHTML = `
     <div class="summary"><div><h2>${N} pacientes para ${docs.length} médicos</h2><p>${esc(date)}. Use a lista em cada paciente para mover entre médicos.</p></div>
-      <div class="row" id="exp"><button class="btn" id="xl">Baixar Excel</button><button class="btn" id="pdf">Baixar PDF (planilha)</button></div></div>
+      <div class="row" id="exp">${window.claude ? '' : '<a class="btn" style="text-decoration:none;color:var(--brand)" href="bate-censo.html">Abrir bate censo</a>'}<button class="btn" id="xl">Baixar Excel</button><button class="btn" id="pdf">Baixar PDF (planilha)</button></div></div>
     <p class="status" id="expStatus"></p>
     <div class="wa"><div class="row" style="justify-content:space-between"><b>Texto para o WhatsApp</b><button class="btn primary" style="width:auto" id="waCopy">Copiar texto</button></div>
       <p class="status" id="waStatus"></p>

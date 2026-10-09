@@ -680,6 +680,7 @@ dSAmiECD0Adivpo5aHfvbi1o8Wx9mfpHQ6QYIEM8b/A0LLcrV1IkCNAAAAAElFTkSuQmCC"><span cl
 <div class="bar" aria-hidden="true"></div>
 
 <div class="wrap">
+  <div class="panel" id="handoff" hidden></div>
   <details class="load panel" id="load" open>
     <summary><span id="loadTitle">Carregar o censo do dia</span><span class="chev" id="loadChev">abrir</span></summary>
     <div class="loadgrid">
@@ -695,7 +696,7 @@ dSAmiECD0Adivpo5aHfvbi1o8Wx9mfpHQ6QYIEM8b/A0LLcrV1IkCNAAAAAElFTkSuQmCC"><span cl
         <textarea class="divtxt" id="divTxt" rows="6" placeholder="Cole aqui o texto da divisão que foi para o WhatsApp (*DIVISÃO DE VISITA HPS — dd/mm/aaaa*) para organizar a lista por médico."></textarea>
         <div class="row" style="margin-top:8px"><button class="btn primary" id="build" disabled>Montar bate censo</button></div>
         <p class="status" id="buildStatus"></p>
-        <p class="hint" id="privacy" hidden>Os arquivos e o que for preenchido ficam só neste aparelho. Nada é enviado para servidor.</p>
+        <p class="hint" id="privacy" hidden>Os arquivos e o que for preenchido ficam só neste aparelho. Nada é enviado para servidor. Se a divisão do dia for feita neste aparelho, o bate censo abre já montado e não precisa carregar nada aqui.</p>
         <p class="hint">Se o dia já existe, o censo novo só atualiza leitos e dias: o que já foi preenchido fica. Quem saiu do censo aparece no fim da lista como provável alta.</p>
       </div>
     </div>
@@ -1294,6 +1295,27 @@ function onDays(list) {
   $('loadTitle').textContent = S.days.length ? 'Carregar ou atualizar o censo' : 'Carregar o censo do dia';
   renderFiles();
 }
+const IDB = {
+  open() { return new Promise((res, rej) => { const r = indexedDB.open('hps-visita', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+  async get(k) { const db = await this.open(); return new Promise((res, rej) => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
+};
+/* a divisão feita neste aparelho entrega censos, kanban e médicos: monta o bate censo sozinho */
+async function useHandoff() {
+  if (window.claude || !window.indexedDB || !S.canWrite) return;
+  let h = null; try { h = await IDB.get('handoff'); } catch (e) { return; }
+  if (!h || !h.files?.length || !D.parse(h.date)) return;
+  const key = D.key(D.parse(h.date)), day = S.days.find(d => d.id === key);
+  if (day && day.censoEm && day.censoEm >= h.savedAt) return;
+  const box = $('handoff'); box.hidden = false;
+  box.innerHTML = `<b>Usando a divisão de ${esc(h.date.slice(0, 5))} feita neste aparelho…</b>`;
+  try {
+    S.census = {}; S.kanban = null; S.kanbanName = '';
+    await handleFiles(h.files.map(x => new File([x.data], x.name, { type: x.type })));
+    $('divTxt').value = h.div || '';
+    await buildDay();
+    box.innerHTML = `<b>Bate censo de ${esc(h.date.slice(0, 5))} montado com a divisão feita neste aparelho às ${D.hm(h.savedAt)}.</b> Censos, kanban e médicos já estão aqui. É só preencher na visita.`;
+  } catch (e) { box.innerHTML = 'Não consegui usar a divisão deste aparelho. Carregue os censos e o kanban abaixo.'; }
+}
 async function start() {
   let db = null, user = null;
   if (window.claude) { try { [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]); } catch (e) {} }
@@ -1303,6 +1325,7 @@ async function start() {
   } else { S.store = makeLocal(); setSync('local', window.claude ? 'Salvando só neste aparelho' : 'Salvo neste aparelho'); $('privacy').hidden = false; }
   S.store.watchDays(onDays, () => setSync('local', 'Sem conexão com a base'));
   renderFiles();
+  if (S.store.kind === 'local') { await new Promise(r => setTimeout(r, 60)); useHandoff(); }
 }
 start();
 </script>
