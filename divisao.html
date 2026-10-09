@@ -217,6 +217,9 @@ section.board{padding:18px clamp(16px,3vw,32px) 48px;min-width:0}
 .status.err{color:var(--warn)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 @media (prefers-reduced-motion:no-preference){.col{animation:in .25s ease-out both}@keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}}
+.sitenav{display:flex;gap:4px;background:#EDF1F8;border-radius:999px;padding:3px}
+.sitenav a{padding:6px 14px;border-radius:999px;font-size:14px;font-weight:700;color:#5B6478;text-decoration:none;white-space:nowrap}
+.sitenav a[aria-current=page]{background:#1739AA;color:#FFFFFF}
 </style>
 </head>
 <body>
@@ -647,6 +650,7 @@ BwG06O/wDhk2G9jLFQDOEyCrgDNeDyOkXd7oTw85PHLe5RhJyEuCBFOhjQDoUEOqWUnPAQdMSDHBAarQ
 XhIkSDDzvf6M9hXjJFwiKEDQ32qAAEsxFjSNmXAs41CkyzBQ/f8JeUmQYFpYftkD2bJdcoVq+vXq+LVE/lUAnaeERQRtVEUmOldSAmiECD0Adivpo5aHfvbi
 1o8Wx9mfpHQ6QYIEM8b/A0LLcrV1IkCNAAAAAElFTkSuQmCC"><span class="sep" aria-hidden="true"></span>
     <div><h1>Divisão de visita</h1><p class="sub">Hospital Paulo Sacramento · 4A, 4B, 6A e 6B</p></div></div>
+  <nav class="sitenav" id="sitenav" aria-label="Telas"><a href="divisao.html" data-nav="divisao.html" aria-current="page">Divisão</a><a href="bate-censo.html" data-nav="bate-censo.html">Bate censo</a></nav>
   <p class="note">A divisão usa só os leitos ocupados do censo; o kanban classifica CM ou cirúrgico. Os arquivos são lidos só neste navegador e não são enviados para nenhum servidor.</p>
 </header>
 <div class="bar" aria-hidden="true"></div>
@@ -1457,5 +1461,6 @@ $('histToday').onclick = () => {
 rebuild();
 
 </script>
+<script>if (window.claude) { const n = document.getElementById('sitenav'); if (n) n.hidden = true; } else document.querySelectorAll('[data-nav]').forEach(a => { a.addEventListener('click', e => { e.preventDefault(); location.href = a.dataset.nav + '?v=' + Date.now(); }); });</script>
 </body>
 </html>
