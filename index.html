@@ -113,10 +113,26 @@ a{display:block;margin:8px 0;padding:12px 18px;border-radius:10px;background:var
 <body>
 <main><p>Abrindo…</p><a href="divisao.html">Divisão de visita</a><a href="bate-censo.html">Bate censo</a></main>
 <script>
-(function () {
+(async function () {
   var d = new Date(), k = '' + d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
-  var bc = false;
+  var cfg = null, bc = false;
+  try {
+    if (location.hash.indexOf('#p=') === 0) {
+      var t = location.hash.slice(3).replace(/-/g, '+').replace(/_/g, '/');
+      cfg = JSON.parse(decodeURIComponent(escape(atob(t))));
+      if (cfg && cfg.u && cfg.c) localStorage.setItem('hps-planilha', JSON.stringify({ u: cfg.u, c: cfg.c }));
+    }
+  } catch (e) {}
+  try { cfg = JSON.parse(localStorage.getItem('hps-planilha') || 'null'); } catch (e) {}
   try { var x = JSON.parse(localStorage.getItem('hps-bate-censo-v1') || '{}'); bc = !!(x.days && x.days[k]); } catch (e) {}
+  if (cfg && cfg.u && cfg.c) {
+    bc = false;
+    try {
+      var ctl = new AbortController(); setTimeout(function () { ctl.abort(); }, 6000);
+      var r = await fetch(cfg.u + '?op=days&code=' + encodeURIComponent(cfg.c), { signal: ctl.signal });
+      var j = await r.json(); bc = !!(j.ok && (j.days || []).some(function (z) { return String(z.id) === k; }));
+    } catch (e) {}
+  }
   location.replace((bc ? 'bate-censo.html' : 'divisao.html') + '?v=' + Date.now());
 })();
 </script>

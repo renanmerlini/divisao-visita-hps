@@ -231,6 +231,11 @@ details.kb dd{margin:0;overflow-wrap:anywhere;white-space:pre-line}
 .tog[data-act="alta"][aria-pressed="true"]{background:var(--ok);border-color:var(--ok);color:var(--card)}
 .upd{margin-left:auto;font-size:11.5px;color:var(--muted)}
 fieldset.ro{border:0;margin:0;padding:0;min-width:0;display:grid;gap:7px}
+.shared summary{cursor:pointer;font-weight:700;list-style:none;display:flex;justify-content:space-between;gap:10px;align-items:center}
+.shared summary::-webkit-details-marker{display:none}
+.shbody{display:grid;gap:6px;margin-top:8px}
+.shgrid{display:grid;gap:4px;max-width:560px}
+.shgrid input{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--paper);width:100%}
 .empty{text-align:center;color:var(--muted);padding:40px 16px}
 .empty h2{color:var(--ink);font-size:20px;margin:0 0 6px}
 .out{display:grid;gap:10px}
@@ -685,6 +690,24 @@ dSAmiECD0Adivpo5aHfvbi1o8Wx9mfpHQ6QYIEM8b/A0LLcrV1IkCNAAAAAElFTkSuQmCC"><span cl
 
 <div class="wrap">
   <div class="panel" id="handoff" hidden></div>
+  <details class="panel shared" id="shared" hidden>
+    <summary><span id="shTitle">Lista compartilhada</span><span class="chev" id="shState"></span></summary>
+    <div class="shbody">
+      <p class="hint" id="shHint"></p>
+      <div class="shgrid">
+        <label for="shUrl" class="lbl">Endereço da planilha (termina em /exec)</label>
+        <input id="shUrl" type="url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off">
+        <label for="shCode" class="lbl">Código de acesso</label>
+        <input id="shCode" type="text" autocomplete="off" autocapitalize="off">
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn primary" id="shSave">Conectar</button>
+        <button class="btn" id="shCopy">Copiar link da equipe</button>
+        <button class="btn" id="shOff">Desconectar este aparelho</button>
+      </div>
+      <p class="status" id="shStatus"></p>
+    </div>
+  </details>
   <details class="load panel" id="load" open>
     <summary><span id="loadTitle">Carregar o censo do dia</span><span class="chev" id="loadChev">abrir</span></summary>
     <div class="loadgrid">
@@ -905,6 +928,80 @@ function makeDb(db) {
   };
 }
 
+/* lista compartilhada numa planilha Google (Apps Script), sem login */
+const CFG_KEY = 'hps-planilha';
+const b64e = t => btoa(unescape(encodeURIComponent(t))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const b64d = t => decodeURIComponent(escape(atob(t.replace(/-/g, '+').replace(/_/g, '/'))));
+function loadCfg() { try { const c = JSON.parse(localStorage.getItem(CFG_KEY) || 'null'); return c && c.u && c.c ? c : null; } catch (e) { return null; } }
+function saveCfg(c) { try { c ? localStorage.setItem(CFG_KEY, JSON.stringify(c)) : localStorage.removeItem(CFG_KEY); } catch (e) {} }
+function readInvite() {
+  if (!location.hash.startsWith('#p=')) return;
+  try { const c = JSON.parse(b64d(location.hash.slice(3))); if (c.u && c.c) saveCfg(c); } catch (e) {}
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+}
+const teamLink = c => location.origin + location.pathname.replace(/[^/]*$/, '') + '#p=' + b64e(JSON.stringify({ u: c.u, c: c.c }));
+function makeSheet(url, code) {
+  const call = async (body, get) => {
+    const r = get ? await fetch(url + '?' + new URLSearchParams({ ...body, code }))
+      : await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ ...body, code }) });
+    const j = await r.json();
+    if (!j.ok) { const e = new Error(j.erro || 'erro'); e.code = j.erro === 'codigo' ? 'codigo' : 'unavailable'; throw e; }
+    return j;
+  };
+  const merge = (a, b) => { const o = { ...a }; for (const [k, v] of Object.entries(b)) o[k] = v && typeof v === 'object' && !Array.isArray(v) && a[k] && typeof a[k] === 'object' ? merge(a[k], v) : v; return o; };
+  let cache = new Map(), dayKey = '', dayCb = null, since = 0, pollT = null, daysCb = null, busy = false;
+  let pending = [], flushT = null, waiters = [];
+  const ok = () => setSync('db', 'Lista compartilhada · ao vivo');
+  const fail = e => setSync('local', e?.code === 'codigo' ? 'Código da lista errado' : 'Sem conexão com a lista. Tentando de novo…');
+  async function poll(full) {
+    if (!dayKey || busy) return; busy = true; const k = dayKey;
+    try {
+      const j = await call({ op: 'day', day: k, since: full ? 0 : Math.max(0, since - 15000) }, true);
+      if (k !== dayKey) return;
+      let changed = !!full; if (full) cache = new Map();
+      for (const [id, d] of Object.entries(j.pats || {})) {
+        if (pending.some(p => p.key === k && p.id === id)) continue;
+        const old = cache.get(id); if (!old || JSON.stringify(old) !== JSON.stringify(d)) { cache.set(id, d); changed = true; }
+      }
+      since = j.now || Date.now(); ok(); if (changed && dayCb) dayCb(new Map(cache));
+    } catch (e) { fail(e); } finally { busy = false; }
+  }
+  async function refreshDays() { try { const j = await call({ op: 'days' }, true); ok(); daysCb && daysCb(j.days || []); } catch (e) { fail(e); } }
+  async function flush() {
+    flushT = null; if (!pending.length) return;
+    const batch = pending; pending = []; const ws = waiters; waiters = [];
+    const byDay = {}; for (const p of batch) (byDay[p.key] = byDay[p.key] || []).push({ id: p.id, body: p.body, isNew: p.isNew });
+    try {
+      for (const [k, items] of Object.entries(byDay)) await call({ op: 'put', day: k, items });
+      ok(); ws.forEach(w => w()); poll(false);
+    } catch (e) { fail(e); pending = batch.concat(pending); waiters = ws.concat(waiters); flushT = setTimeout(flush, 8000); }
+  }
+  setInterval(() => { if (!document.hidden) poll(false); }, 10000);
+  setInterval(() => { if (!document.hidden) refreshDays(); }, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { poll(false); if (pending.length && !flushT) flush(); } });
+  return {
+    kind: 'sheet',
+    watchDays(cb) { daysCb = cb; refreshDays(); return () => { daysCb = null; }; },
+    watchDay(key, cb) { dayKey = key; dayCb = cb; cache = new Map(); since = 0; busy = false; poll(true); return () => { if (dayKey === key) { dayCb = null; dayKey = ''; } }; },
+    async readDay(key) { const j = await call({ op: 'day', day: key, since: 0 }, true); return new Map(Object.entries(j.pats || {})); },
+    async putDay(key, meta) { await call({ op: 'putDay', day: key, meta }); refreshDays(); },
+    putPatient(key, id, body, isNew) {
+      if (key === dayKey) cache.set(id, isNew ? body : merge(cache.get(id) || {}, body));
+      pending.push({ key, id, body, isNew });
+      return new Promise(res => { waiters.push(res); if (!flushT) flushT = setTimeout(flush, 400); });
+    },
+    async putMany(key, items, progress) {
+      for (let i = 0; i < items.length; i += 25) {
+        const chunk = items.slice(i, i + 25);
+        await call({ op: 'put', day: key, items: chunk });
+        if (key === dayKey) chunk.forEach(x => cache.set(x.id, x.isNew ? x.body : merge(cache.get(x.id) || {}, x.body)));
+        progress && progress(Math.min(i + 25, items.length), items.length);
+      }
+      ok();
+    }
+  };
+}
+
 /* ======================= estado ======================= */
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -1010,14 +1107,14 @@ async function buildDay() {
       altaKb: k?.alta || '', exames: k?.exames || '', multi: k?.multi || '', obs: k?.obs || '', longa: k?.longa || '', noKanban: !k,
       sug: sug?.prev || '', sugTxt: sug?.txt || '', visitador: dv ? L.title(dv.doc) : (existing.get(id)?.c?.visitador || '') };
     const isNew = !existing.has(id);
-    jobs.push(() => S.store.putPatient(key, id, isNew ? { ...BLANK, c } : { c, presente: true }, isNew));
+    jobs.push({ id, body: isNew ? { ...BLANK, c } : { c, presente: true }, isNew });
     n++;
   });
-  for (const [id, p] of existing) if (!seen.has(id) && p.presente !== false) jobs.push(() => S.store.putPatient(key, id, { presente: false }, false));
+  for (const [id, p] of existing) if (!seen.has(id) && p.presente !== false) jobs.push({ id, body: { presente: false }, isNew: false });
   try {
     await S.store.putDay(key, { date: D.br(day), censoEm: new Date().toISOString(), total: n, kanban: S.kanbanName || '', units: Object.fromEntries(UNITS.map(u => [u, S.census[u]?.patients.length || 0])) });
-    let i = 0; const workers = Array.from({ length: 4 }, async () => { while (i < jobs.length) { const j = jobs[i++]; await j(); setStatus('buildStatus', `Salvando… ${Math.min(i, jobs.length)} de ${jobs.length}`); } });
-    await Promise.all(workers);
+    if (S.store.putMany) await S.store.putMany(key, jobs, (k, t) => setStatus('buildStatus', `Salvando… ${k} de ${t}`));
+    else { let i = 0; const workers = Array.from({ length: 4 }, async () => { while (i < jobs.length) { const j = jobs[i++]; await S.store.putPatient(key, j.id, j.body, j.isNew); setStatus('buildStatus', `Salvando… ${Math.min(i, jobs.length)} de ${jobs.length}`); } }); await Promise.all(workers); }
     setStatus('buildStatus', `Pronto: ${n} pacientes de ${D.br(day)}${div.rows.length ? ` · divisão encontrada para ${divHits}` : ''}.`);
     openDay(key); $('load').open = false;
   } catch (e) {
@@ -1288,9 +1385,38 @@ async function exportFile(kind) {
 $('pdfBtn').addEventListener('click', () => exportFile('pdf'));
 $('xlBtn').addEventListener('click', () => exportFile('xlsx'));
 
+/* ======================= lista compartilhada ======================= */
+function renderShared() {
+  if (window.claude) return;
+  const c = loadCfg(), box = $('shared'); box.hidden = false;
+  $('shTitle').textContent = c ? 'Lista compartilhada: conectada' : 'Lista compartilhada (opcional)';
+  $('shState').textContent = c ? 'ver link da equipe' : 'configurar';
+  $('shHint').textContent = c ? 'Todos que abrirem o link da equipe veem e editam esta mesma lista, ao vivo. Mande o link só para a equipe: ele leva o código de acesso.'
+    : 'Conecte a planilha Google da equipe para que coordenador e plantonistas vejam a mesma lista ao vivo. Sem isso, cada aparelho guarda só o seu preenchimento.';
+  $('shUrl').value = c?.u || ''; $('shCode').value = c?.c || '';
+  $('shCopy').hidden = !c; $('shOff').hidden = !c;
+}
+$('shSave').addEventListener('click', async () => {
+  const u = $('shUrl').value.trim(), c = $('shCode').value.trim();
+  if (!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(u) || !c) { setStatus('shStatus', 'Cole o endereço que termina em /exec e o código de acesso.', true); return; }
+  setStatus('shStatus', 'Testando a conexão…');
+  try {
+    const r = await fetch(u + '?' + new URLSearchParams({ op: 'ping', code: c })); const j = await r.json();
+    if (!j.ok) { setStatus('shStatus', j.erro === 'codigo' ? 'O código não confere com o da planilha.' : 'A planilha respondeu com erro: ' + j.erro, true); return; }
+    saveCfg({ u, c }); setStatus('shStatus', 'Conectado. Recarregando…'); setTimeout(() => location.reload(), 600);
+  } catch (e) { setStatus('shStatus', 'Não consegui falar com a planilha. Confira o endereço e se a implantação está para "Qualquer pessoa".', true); }
+});
+$('shCopy').addEventListener('click', async () => {
+  const c = loadCfg(); if (!c) return; const t = teamLink(c);
+  try { await navigator.clipboard.writeText(t); setStatus('shStatus', 'Link da equipe copiado. Mande no grupo dos plantonistas.'); }
+  catch (e) { $('shUrl').value = t; $('shUrl').select(); setStatus('shStatus', 'Copie o link que apareceu no campo acima.'); }
+});
+$('shOff').addEventListener('click', () => { saveCfg(null); location.reload(); });
+
 /* ======================= início ======================= */
 function setSync(kind, txt) { const el = $('sync'); el.className = 'sync ' + (kind === 'db' ? '' : kind === 'ro' ? 'ro' : 'local'); $('syncTxt').textContent = txt; }
 function onDays(list) {
+  S.daysLoaded = true;
   S.days = list.filter(d => /^\d{8}$/.test(d.id)).sort((a, b) => b.id.localeCompare(a.id));
   const sel = $('daySel'); sel.hidden = !S.days.length;
   sel.innerHTML = S.days.map(d => `<option value="${d.id}">${esc(d.date || D.short(d.id))} · ${d.total ?? ''} pac.</option>`).join('');
@@ -1305,7 +1431,7 @@ const IDB = {
 };
 /* a divisão feita neste aparelho entrega censos, kanban e médicos: monta o bate censo sozinho */
 async function useHandoff() {
-  if (window.claude || !window.indexedDB || !S.canWrite) return;
+  if (window.claude || !window.indexedDB || !S.canWrite || S.store.kind === 'db') return;
   let h = null; try { h = await IDB.get('handoff'); } catch (e) { return; }
   if (!h || !h.files?.length || !D.parse(h.date)) return;
   const key = D.key(D.parse(h.date)), day = S.days.find(d => d.id === key);
@@ -1321,15 +1447,19 @@ async function useHandoff() {
   } catch (e) { box.innerHTML = 'Não consegui usar a divisão deste aparelho. Carregue os censos e o kanban abaixo.'; }
 }
 async function start() {
+  readInvite();
   let db = null, user = null;
   if (window.claude) { try { [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]); } catch (e) {} }
   if (db) {
     S.store = makeDb(db); setSync('db', 'Compartilhado');
     if (user) { try { const w = await user.can('data.write'); if (w === false) { S.canWrite = false; setSync('ro', 'Só leitura'); } } catch (e) {} }
-  } else { S.store = makeLocal(); setSync('local', window.claude ? 'Salvando só neste aparelho' : 'Salvo neste aparelho'); $('privacy').hidden = false; }
+  } else if (!window.claude && loadCfg()) { const c = loadCfg(); S.store = makeSheet(c.u, c.c); setSync('db', 'Lista compartilhada · conectando…'); }
+  else { S.store = makeLocal(); setSync('local', window.claude ? 'Salvando só neste aparelho' : 'Salvo neste aparelho'); $('privacy').hidden = false; }
+  renderShared();
   S.store.watchDays(onDays, () => setSync('local', 'Sem conexão com a base'));
   renderFiles();
   if (S.store.kind === 'local') { await new Promise(r => setTimeout(r, 60)); useHandoff(); }
+  else if (S.store.kind === 'sheet') { for (let t = 0; t < 40 && !S.daysLoaded; t++) await new Promise(r => setTimeout(r, 250)); useHandoff(); }
 }
 start();
 if (window.claude) $('sitenav').hidden = true; else document.querySelectorAll('[data-nav]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); location.href = a.dataset.nav + '?v=' + Date.now(); }));
