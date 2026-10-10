@@ -943,12 +943,15 @@ const b64e = t => btoa(unescape(encodeURIComponent(t))).replace(/\+/g, '-').repl
 const b64d = t => decodeURIComponent(escape(atob(t.replace(/-/g, '+').replace(/_/g, '/'))));
 function loadCfg() { try { const c = JSON.parse(localStorage.getItem(CFG_KEY) || 'null'); return c && c.u && c.c ? c : null; } catch (e) { return null; } }
 function saveCfg(c) { try { c ? localStorage.setItem(CFG_KEY, JSON.stringify(c)) : localStorage.removeItem(CFG_KEY); } catch (e) {} }
+const SHEET_URL = 'https://script.google.com/macros/s/AKfycbxkGguEX2yO0-5BY8Fkt8XiumbxyW7xmHRL9-Bqr2X1UxhlPirm34OSDXAn4FSCNvD7mQ/exec';
 function readInvite() {
-  if (!location.hash.startsWith('#p=')) return;
-  try { const c = JSON.parse(b64d(location.hash.slice(3))); if (c.u && c.c) saveCfg(c); } catch (e) {}
+  const h = location.hash, m = h.match(/^#(?:c=)?(hps-[a-z0-9]+)$/i);
+  if (m) saveCfg({ u: SHEET_URL, c: m[1] });
+  else if (!h.startsWith('#p=')) return;
+  else try { const c = JSON.parse(b64d(h.slice(3))); if (c.u && c.c) saveCfg(c); } catch (e) {}
   try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
 }
-const teamLink = c => location.origin + location.pathname.replace(/[^/]*$/, '') + '#p=' + b64e(JSON.stringify({ u: c.u, c: c.c }));
+const teamLink = c => location.origin + location.pathname.replace(/[^/]*$/, '') + (c.u === SHEET_URL && /^hps-[a-z0-9]+$/i.test(c.c) ? '#' + c.c : '#p=' + b64e(JSON.stringify({ u: c.u, c: c.c })));
 function makeSheet(url, code) {
   const call = async (body, get) => {
     const r = get ? await fetch(url + '?' + new URLSearchParams({ ...body, code }))

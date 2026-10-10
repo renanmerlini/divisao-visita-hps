@@ -117,7 +117,9 @@ a{display:block;margin:8px 0;padding:12px 18px;border-radius:10px;background:var
   var d = new Date(), k = '' + d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
   var cfg = null, bc = false;
   try {
-    if (location.hash.indexOf('#p=') === 0) {
+    var m = location.hash.match(/^#(?:c=)?(hps-[a-z0-9]+)$/i);
+    if (m) localStorage.setItem('hps-planilha', JSON.stringify({ u: 'https://script.google.com/macros/s/AKfycbxkGguEX2yO0-5BY8Fkt8XiumbxyW7xmHRL9-Bqr2X1UxhlPirm34OSDXAn4FSCNvD7mQ/exec', c: m[1] }));
+    else if (location.hash.indexOf('#p=') === 0) {
       var t = location.hash.slice(3).replace(/-/g, '+').replace(/_/g, '/');
       cfg = JSON.parse(decodeURIComponent(escape(atob(t))));
       if (cfg && cfg.u && cfg.c) localStorage.setItem('hps-planilha', JSON.stringify({ u: cfg.u, c: cfg.c }));
