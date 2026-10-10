@@ -150,6 +150,7 @@ header.top .sub{margin:2px 0 0;font-size:13px;color:#5B6478}
 @media (max-width:560px){.logo{height:24px}.sep{height:28px}}
 .wrap{padding-inline:clamp(16px,3vw,32px);padding-block:16px 60px;display:grid;gap:16px;max-width:1500px;margin:0 auto}
 .panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.panel.warn{background:var(--pm-soft);border-color:var(--pm)}.panel.warn .btn{margin-left:6px}
 details.load>summary{cursor:pointer;font-weight:700;font-size:15px;list-style:none;display:flex;justify-content:space-between;gap:10px;align-items:center}
 details.load>summary::-webkit-details-marker{display:none}
 details.load>summary .chev{color:var(--muted);font-weight:600;font-size:13px}
@@ -210,6 +211,9 @@ textarea.divtxt{width:100%;border:1px solid var(--line);border-radius:8px;paddin
 .clin{margin:0;font-size:13px;overflow-wrap:anywhere}
 .clin b{font-weight:700}
 .yest{font-size:12.5px;background:var(--soft);border-radius:6px;padding:4px 8px;overflow-wrap:anywhere}
+.yest.due{background:var(--pm-soft);color:var(--ink);border-left:3px solid var(--pm)}
+.lembrete{background:var(--pm-soft);border:1px solid var(--pm);border-radius:12px;padding:12px 14px;margin-bottom:12px}
+.lembrete ul{margin:6px 0 8px;padding-left:18px;columns:2 260px;font-size:13.5px}.lembrete li.ok{color:var(--muted);text-decoration:line-through}
 .sug{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px;background:var(--pm-soft);color:var(--ink);border-radius:6px;padding:4px 8px}
 .sug button{border:1px solid var(--pm);background:var(--card);color:var(--pm);border-radius:6px;font-size:12px;font-weight:800;padding:2px 8px;cursor:pointer}
 details.kb summary{cursor:pointer;font-size:12.5px;color:var(--muted);font-weight:700}
@@ -696,6 +700,7 @@ dSAmiECD0Adivpo5aHfvbi1o8Wx9mfpHQ6QYIEM8b/A0LLcrV1IkCNAAAAAElFTkSuQmCC"><span cl
 <div class="bar" aria-hidden="true"></div>
 
 <div class="wrap">
+  <div class="panel warn" id="dayWarn" hidden></div>
   <div class="panel" id="handoff" hidden></div>
   <details class="panel shared" id="shared" hidden>
     <summary><span id="shTitle">Lista compartilhada</span><span class="chev" id="shState"></span></summary>
@@ -737,6 +742,7 @@ dSAmiECD0Adivpo5aHfvbi1o8Wx9mfpHQ6QYIEM8b/A0LLcrV1IkCNAAAAAElFTkSuQmCC"><span cl
   </details>
 
   <div id="main" hidden>
+    <section class="lembrete" id="lembrete" hidden aria-live="polite"></section>
     <section class="tiles" id="tiles" aria-label="Resumo do dia"></section>
     <div class="tools" id="tools">
       <div class="row">
@@ -954,25 +960,36 @@ function readInvite() {
 const teamLink = c => location.origin + location.pathname.replace(/[^/]*$/, '') + (c.u === SHEET_URL && /^hps-[a-z0-9]+$/i.test(c.c) ? '#' + c.c : '#p=' + b64e(JSON.stringify({ u: c.u, c: c.c })));
 function makeSheet(url, code) {
   const call = async (body, get) => {
-    const r = get ? await fetch(url + '?' + new URLSearchParams({ ...body, code }))
-      : await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ ...body, code }) });
-    const j = await r.json();
+    const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), get ? 25000 : 45000);
+    let j;
+    try {
+      const r = get ? await fetch(url + '?' + new URLSearchParams({ ...body, code }), { signal: ctl.signal, cache: 'no-store' })
+        : await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ ...body, code }), signal: ctl.signal });
+      j = await r.json();
+    } finally { clearTimeout(tm); }
     if (!j.ok) { const e = new Error(j.erro || 'erro'); e.code = j.erro === 'codigo' ? 'codigo' : 'unavailable'; throw e; }
     return j;
   };
   const merge = (a, b) => { const o = { ...a }; for (const [k, v] of Object.entries(b)) o[k] = v && typeof v === 'object' && !Array.isArray(v) && a[k] && typeof a[k] === 'object' ? merge(a[k], v) : v; return o; };
   let cache = new Map(), dayKey = '', dayCb = null, since = 0, pollT = null, daysCb = null, busy = false;
-  let pending = [], flushT = null, waiters = [];
+  let pending = [], flushT = null, waiters = [], inflight = [];
+  const PK = 'hps-bc-fila';
+  const savePend = () => { try { const all = inflight.concat(pending); all.length ? localStorage.setItem(PK, JSON.stringify(all)) : localStorage.removeItem(PK); } catch (e) {} };
+  try { const old = JSON.parse(localStorage.getItem(PK) || '[]'); if (Array.isArray(old) && old.length) { pending = old.filter(p => p && p.key && p.id); flushT = setTimeout(flush, 1500); } } catch (e) {}
+  const queued = (k, id) => pending.some(p => p.key === k && p.id === id) || inflight.some(p => p.key === k && p.id === id);
   const ok = () => setSync('db', 'Lista compartilhada · ao vivo');
   const fail = e => setSync('local', e?.code === 'codigo' ? 'Código da lista errado' : 'Sem conexão com a lista. Tentando de novo…');
   async function poll(full) {
     if (!dayKey || busy) return; busy = true; const k = dayKey;
     try {
-      const j = await call({ op: 'day', day: k, since: full ? 0 : Math.max(0, since - 15000) }, true);
+      const j = await call({ op: 'day', day: k, since: full ? 0 : Math.max(0, since - 120000) }, true);
       if (k !== dayKey) return;
-      let changed = !!full; if (full) cache = new Map();
+      let changed = !!full; if (full) cache = new Map([...cache].filter(([id]) => queued(k, id)));
       for (const [id, d] of Object.entries(j.pats || {})) {
-        if (pending.some(p => p.key === k && p.id === id)) continue;
+        if (queued(k, id)) {
+          if (!cache.has(id)) { cache.set(id, inflight.concat(pending).filter(p => p.key === k && p.id === id).reduce((a, p) => p.isNew ? p.body : merge(a, p.body), d)); changed = true; }
+          continue;
+        }
         const old = cache.get(id); if (!old || JSON.stringify(old) !== JSON.stringify(d)) { cache.set(id, d); changed = true; }
       }
       since = j.now || Date.now(); ok(); if (changed && dayCb) dayCb(new Map(cache));
@@ -980,17 +997,21 @@ function makeSheet(url, code) {
   }
   async function refreshDays() { try { const j = await call({ op: 'days' }, true); ok(); daysCb && daysCb(j.days || []); } catch (e) { fail(e); } }
   async function flush() {
-    flushT = null; if (!pending.length) return;
-    const batch = pending; pending = []; const ws = waiters; waiters = [];
+    clearTimeout(flushT); flushT = null; if (!pending.length || inflight.length) return;
+    const batch = pending; pending = []; inflight = batch; const ws = waiters; waiters = []; savePend();
     const byDay = {}; for (const p of batch) (byDay[p.key] = byDay[p.key] || []).push({ id: p.id, body: p.body, isNew: p.isNew });
     try {
       for (const [k, items] of Object.entries(byDay)) await call({ op: 'put', day: k, items });
-      ok(); ws.forEach(w => w()); poll(false);
-    } catch (e) { fail(e); pending = batch.concat(pending); waiters = ws.concat(waiters); flushT = setTimeout(flush, 8000); }
+      inflight = []; savePend(); ok(); ws.forEach(w => w()); poll(false);
+      if (pending.length && !flushT) flushT = setTimeout(flush, 400);
+    } catch (e) { fail(e); inflight = []; pending = batch.concat(pending); savePend(); waiters = ws.concat(waiters); flushT = setTimeout(flush, 8000); }
   }
   setInterval(() => { if (!document.hidden) poll(false); }, 10000);
   setInterval(() => { if (!document.hidden) refreshDays(); }, 60000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { poll(false); if (pending.length && !flushT) flush(); } });
+  document.addEventListener('visibilitychange', () => { if (pending.length) flush(); if (!document.hidden) { poll(false); refreshDays(); } });
+  window.addEventListener('pagehide', () => { if (pending.length) flush(); });
+  window.addEventListener('online', () => { if (pending.length) flush(); });
+  const idle = async () => { for (let t = 0; t < 40 && busy; t++) await new Promise(r => setTimeout(r, 150)); };
   return {
     kind: 'sheet',
     watchDays(cb) { daysCb = cb; refreshDays(); return () => { daysCb = null; }; },
@@ -999,9 +1020,11 @@ function makeSheet(url, code) {
     async putDay(key, meta) { await call({ op: 'putDay', day: key, meta }); refreshDays(); },
     putPatient(key, id, body, isNew) {
       if (key === dayKey) cache.set(id, isNew ? body : merge(cache.get(id) || {}, body));
-      pending.push({ key, id, body, isNew });
+      pending.push({ key, id, body, isNew }); savePend();
       return new Promise(res => { waiters.push(res); if (!flushT) flushT = setTimeout(flush, 400); });
     },
+    async refresh() { if (pending.length) await flush(); await idle(); await poll(true); },
+    pendingCount: () => pending.length + inflight.length,
     async putMany(key, items, progress) {
       for (let i = 0; i < items.length; i += 25) {
         const chunk = items.slice(i, i + 25);
@@ -1031,22 +1054,26 @@ const lng = p => p.c?.team === 'RP' && (p.c?.dias ?? 0) > 3;
 const d4 = p => p.c?.team === 'RP' && (p.c?.dias ?? 0) === 3;
 const present = p => p.presente !== false;
 const hasPend = p => !!String(p.pend || '').trim();
-const openPend = p => present(p) && !p.resolvido && p.desfecho !== 'alta' && (hasPend(p) || ((p.prev === 'tarde' || p.prev === '24h') && !!String(p.falta || '').trim()));
+const isAlta = p => p.desfecho === 'alta' || (p.prev === 'efetivada' && !p.desfecho);
+const openPend = p => present(p) && !p.resolvido && !isAlta(p) && !p.desfecho && (hasPend(p) || ((p.prev === 'tarde' || p.prev === '24h') && !!String(p.falta || '').trim()));
 L.openKb = c => [c.exames, c.multi].join('\n').split(/\n|\/\/|;/).map(x => x.trim()).filter(x => x.length > 3 && !/\bOK\b|^N\/?A\b|^NEGA|REALIZAD|^S\/?P$/i.test(x));
+/* ontem com previsão em 24h (ou hoje à tarde que não saiu): é alta prevista para hoje */
+const dueYest = id => { const y = S.yest.get(id); return !!y && !y.desfecho && !(y.prev === 'efetivada') && (y.prev === '24h' || y.prev === 'tarde'); };
 const FILTERS = [
   ['todos', 'Todos', p => present(p)],
-  ['nao', 'Não discutidos', p => present(p) && !p.prev && p.desfecho !== 'alta'],
+  ['nao', 'Não discutidos', p => present(p) && !p.prev && !p.desfecho],
+  ['ontem', 'Previstos ontem para hoje', (p, id) => present(p) && dueYest(id)],
   ['tarde', 'Hoje à tarde', p => p.prev === 'tarde'],
   ['24h', 'Em 24h', p => p.prev === '24h'],
   ['48h', 'Em 48h', p => p.prev === '48h'],
   ['dd', 'DD/DHD', p => present(p) && !!p.dd],
   ['desf', 'Óbito ou transferência', p => ['obito', 'uti', 'outra'].includes(p.desfecho)],
-  ['efetivada', 'Alta efetivada', p => p.prev === 'efetivada'],
+  ['efetivada', 'Alta efetivada', isAlta],
   ['sem', 'Sem previsão', p => p.prev === 'sem'],
   ['pdia', 'Pendências do dia', hasPend],
   ['pend', 'Pendências abertas', openPend],
   ['long', 'RP com mais de 3 dias', p => present(p) && lng(p)],
-  ['altas', 'Altas do dia', p => p.desfecho === 'alta'],
+  ['altas', 'Altas do dia', isAlta],
   ['saiu', 'Saíram do censo', p => !present(p)]
 ];
 const fOf = k => FILTERS.find(f => f[0] === k)[2];
@@ -1141,20 +1168,51 @@ async function buildDay() {
 
 /* ======================= dia aberto ======================= */
 let unsubDay = null;
+const todayKey = () => D.key(new Date());
+function renderDayWarn() {
+  const el = $('dayWarn'); if (!el || !S.day) return;
+  const newest = S.days[0]?.id || '', tk = todayKey();
+  if (S.day === newest && S.day >= tk) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = S.day !== newest
+    ? `<b>Atenção: você está no bate censo de ${esc(D.short(S.day))}.</b> O mais recente é o de ${esc(D.short(newest))}. <button class="btn primary" id="goNewest">Ir para ${esc(D.short(newest))}</button>`
+    : `<b>Atenção: este é o bate censo de ${esc(D.short(S.day))}.</b> O de hoje (${esc(D.short(tk))}) ainda não foi montado. O que for marcado aqui fica no dia ${esc(D.short(S.day))}.`;
+  const b = $('goNewest'); if (b) b.onclick = () => { S.dayManual = false; openDay(newest); };
+}
 function openDay(key) {
   if (!key) return;
-  S.day = key; $('daySel').value = key;
+  S.day = key; $('daySel').value = key; S.rescueDone = false; S.yestLoaded = ''; renderDayWarn();
   if (unsubDay) unsubDay();
   unsubDay = S.store.watchDay(key, m => onPatients(m), e => setSync('err', 'Conexão perdida. Recarregue a página.'));
   const prevKey = S.days.map(d => d.id).filter(k => k < key).sort().reverse()[0] || '';
   S.yestKey = prevKey; S.yest = new Map();
-  if (prevKey) S.store.readDay(prevKey).then(m => { S.yest = m; renderList(true); }).catch(() => {});
+  if (prevKey) S.store.readDay(prevKey).then(m => { if (S.day !== key) return; S.yest = m; S.yestLoaded = key; renderTiles(); renderChips(); renderList(true); rescue(); }).catch(() => {});
+}
+/* quem ficou com a tela do dia anterior aberta preencheu lá: traz para o dia atual o que foi feito hoje */
+function rescue() {
+  if (S.rescueDone || !S.canWrite || S.yestLoaded !== S.day || !S.pats.size || S.day !== S.days[0]?.id) return;
+  S.rescueDone = true;
+  const F = ['prev', 'falta', 'pend', 'desfecho', 'dd'], got = [];
+  for (const [id, y] of S.yest) {
+    const t = S.pats.get(id); if (!t || !present(t) || !y.atualizado) continue;
+    if (D.key(new Date(y.atualizado)) < S.day || t.resg === y.atualizado) continue;
+    const patch = {};
+    for (const f of F) if (y[f] && !t[f]) { patch[f] = y[f]; if (f === 'desfecho') patch.desfechoEm = y.desfechoEm || y.atualizado; }
+    if (y.resolvido && !t.resolvido && (patch.pend || t.pend === y.pend)) { patch.resolvido = true; patch.resolvidoEm = y.resolvidoEm || y.atualizado; }
+    if (!Object.keys(patch).length) continue;
+    patch.resg = y.atualizado; got.push([id, patch]);
+  }
+  if (!got.length) return;
+  got.forEach(([id, patch]) => write(id, patch));
+  const nA = got.filter(([, p]) => p.desfecho === 'alta').length, nO = got.filter(([, p]) => p.desfecho && p.desfecho !== 'alta').length;
+  const box = $('handoff'); box.hidden = false;
+  box.innerHTML = `<b>${got.length} paciente(s) foram preenchidos hoje na lista de ${esc(D.short(S.yestKey))} (tela antiga aberta no celular).</b> Já trouxe para ${esc(D.short(S.day))}${nA ? `: ${nA} alta(s)` : ''}${nO ? `${nA ? ',' : ':'} ${nO} óbito/transferência` : ''}.`;
 }
 function onPatients(m) {
   const before = S.pats; S.pats = m;
   $('main').hidden = !m.size; $('emptyMain').hidden = !!m.size;
   const structural = before.size !== m.size || [...m.keys()].some(k => !before.has(k)) || [...m].some(([k, v]) => (before.get(k)?.presente !== false) !== (v.presente !== false));
-  renderTiles(); renderChips();
+  renderTiles(); renderChips(); setTimeout(rescue, 0);
   if (structural || !$('list').children.length) { renderList(true); return; }
   for (const [id, p] of m) {
     if (before.get(id) === p) continue;
@@ -1168,14 +1226,27 @@ function onPatients(m) {
 function stats() {
   const all = [...S.pats.values()], pr = all.filter(present), rp = pr.filter(p => p.c?.team === 'RP');
   const cnt = f => all.filter(f).length;
-  const altas = all.filter(p => p.desfecho === 'alta' || (p.prev === 'efetivada' && !p.desfecho));
+  const altas = all.filter(isAlta);
   return { total: pr.length, rp: rp.length, vs: pr.length - rp.length, long: rp.filter(lng).length,
     media: rp.length ? rp.reduce((a, p) => a + (p.c?.dias || 0), 0) / rp.length : 0,
-    efetivada: cnt(p => p.prev === 'efetivada'), tarde: cnt(p => p.prev === 'tarde'), h24: cnt(p => p.prev === '24h'), sem: cnt(p => p.prev === 'sem'),
-    nao: pr.filter(p => !p.prev && p.desfecho !== 'alta').length, pend: cnt(openPend), pdia: all.filter(p => present(p) && hasPend(p)).length, pdiaRes: all.filter(p => present(p) && hasPend(p) && p.resolvido).length, altas: altas.length, altasRp: altas.filter(p => p.c?.team === 'RP').length, obitos: cnt(p => p.desfecho === 'obito'), utis: cnt(p => p.desfecho === 'uti'), outras: cnt(p => p.desfecho === 'outra'), dd: pr.filter(p => p.dd).length,
+    efetivada: cnt(isAlta), tarde: cnt(p => p.prev === 'tarde'), h24: cnt(p => p.prev === '24h'), sem: cnt(p => p.prev === 'sem'),
+    nao: pr.filter(p => !p.prev && !p.desfecho).length, pend: cnt(openPend), pdia: all.filter(p => present(p) && hasPend(p)).length, pdiaRes: all.filter(p => present(p) && hasPend(p) && p.resolvido).length, altas: altas.length, altasRp: altas.filter(p => p.c?.team === 'RP').length, obitos: cnt(p => p.desfecho === 'obito'), utis: cnt(p => p.desfecho === 'uti'), outras: cnt(p => p.desfecho === 'outra'), dd: pr.filter(p => p.dd).length,
     saiu: cnt(p => !present(p)) };
 }
+function renderLembrete() {
+  const el = $('lembrete'); if (!el) return;
+  const ps = S.yestLoaded === S.day ? [...S.pats].filter(([id, p]) => p.c && present(p) && dueYest(id)).sort((a, b) => bedSort(a[1], b[1])) : [];
+  if (!ps.length) { el.hidden = true; return; }
+  const ok = ps.filter(([, p]) => isAlta(p)).length, falta = ps.length - ok;
+  const n24 = ps.filter(([id]) => S.yest.get(id).prev === '24h').length;
+  el.hidden = false;
+  el.innerHTML = `<b>⏰ Altas previstas para hoje pelo bate censo de ${esc(D.short(S.yestKey))}: ${ps.length}</b>${falta ? ` · <b>${falta} ainda sem alta</b>` : ' · todas com alta ✅'}
+    <div class="hint">${n24} com previsão em 24h${ps.length - n24 ? ` e ${ps.length - n24} que estavam para "hoje à tarde" e não saíram` : ''}. Priorize esses na visita.</div>
+    <ul>${ps.map(([id, p]) => `<li class="${isAlta(p) ? 'ok' : ''}">${esc(p.c.bed)} – ${esc(L.title(p.c.name))}${p.c.visitador ? ' · ' + esc(p.c.visitador.split(' ')[0]) : ''}</li>`).join('')}</ul>
+    <button class="btn" data-f="ontem">Ver só esses pacientes</button>`;
+}
 function renderTiles() {
+  renderLembrete();
   const s = stats(), fmt = x => x.toLocaleString('pt-BR', { maximumFractionDigits: 1, minimumFractionDigits: 1 });
   const t = (f, cls, k, v, sub) => `<button class="tile ${cls}" data-f="${f}" aria-pressed="${S.f === f}"><span class="k">${k}</span><span class="v">${v}</span><span class="s">${sub}</span></button>`;
   $('tiles').innerHTML = [
@@ -1191,15 +1262,15 @@ function renderTiles() {
   ].join('');
 }
 function renderChips() {
-  const all = [...S.pats.values()];
-  $('fChips').innerHTML = FILTERS.filter(([k]) => k !== 'saiu' || all.some(p => !present(p))).map(([k, lab, fn]) => `<button class="chip" data-f="${k}" aria-pressed="${S.f === k}">${lab}<b>${all.filter(fn).length}</b></button>`).join('');
+  const all = [...S.pats.values()], ent = [...S.pats];
+  $('fChips').innerHTML = FILTERS.filter(([k]) => (k !== 'saiu' || all.some(p => !present(p))) && (k !== 'ontem' || S.yest.size)).map(([k, lab, fn]) => `<button class="chip" data-f="${k}" aria-pressed="${S.f === k}">${lab}<b>${ent.filter(([id, p]) => fn(p, id)).length}</b></button>`).join('');
   $('unitChips').innerHTML = ['todos', ...UNITS].map(u => `<button class="chip" data-u="${u}" aria-pressed="${S.unit === u}">${u === 'todos' ? 'Todos os postos' : u}</button>`).join('');
   document.querySelectorAll('.seg [data-g]').forEach(b => b.setAttribute('aria-pressed', b.dataset.g === S.group));
 }
 const bedSort = (a, b) => UNITS.indexOf(a.c.unit) - UNITS.indexOf(b.c.unit) || String(a.c.bed).localeCompare(String(b.c.bed), 'pt', { numeric: true });
 function visible() {
   const fn = fOf(S.f), q = L.norm(S.q);
-  return [...S.pats].filter(([, p]) => p.c && fn(p) && (S.unit === 'todos' || p.c.unit === S.unit) && (!q || L.norm(p.c.bed + ' ' + p.c.name).includes(q)));
+  return [...S.pats].filter(([id, p]) => p.c && fn(p, id) && (S.unit === 'todos' || p.c.unit === S.unit) && (!q || L.norm(p.c.bed + ' ' + p.c.name).includes(q)));
 }
 function renderList(full) {
   const rows = visible();
@@ -1221,10 +1292,10 @@ function renderList(full) {
 }
 function card(id, p) {
   const c = p.c || {}, ro = !S.canWrite;
-  const cls = ['pt', lng(p) ? 'long' : d4(p) ? 'd4' : '', present(p) ? '' : 'gone', p.desfecho === 'alta' ? 'done-alta' : p.desfecho ? 'done-out' : ''].join(' ');
+  const cls = ['pt', lng(p) ? 'long' : d4(p) ? 'd4' : '', present(p) ? '' : 'gone', isAlta(p) ? 'done-alta' : p.desfecho ? 'done-out' : ''].join(' ');
   const daysCls = lng(p) ? 'long' : d4(p) ? 'd4' : '';
   const y = S.yest.get(id);
-  const yTxt = y && (y.prev || y.falta) ? `<div class="yest"><b>Bate censo de ${D.short(S.yestKey)}:</b> ${esc(PREV[y.prev] || 'sem marcação')}${y.falta ? ' · ' + esc(y.falta) : ''}${y.resolvido ? ' · resolvido' : ''}</div>` : '';
+  const yTxt = y && (y.prev || y.falta) ? `<div class="yest ${dueYest(id) && !isAlta(p) ? 'due' : ''}">${dueYest(id) && !isAlta(p) ? '⏰ <b>Alta prevista para hoje.</b> ' : ''}<b>Bate censo de ${D.short(S.yestKey)}:</b> ${esc(PREV[y.prev] || 'sem marcação')}${y.falta ? ' · ' + esc(y.falta) : ''}${y.resolvido ? ' · resolvido' : ''}</div>` : '';
   const sug = c.sug && !p.prev ? `<div class="sug"><span>Kanban sugere <b>${esc(PREV[c.sug])}</b> · ${esc(c.sugTxt)}</span>${ro ? '' : `<button data-act="sug" data-v="${c.sug}">Usar</button>`}</div>` : '';
   const kb = [['Equipe', c.spec], ['Diagnóstico', c.diag], ['Plano', c.plano], ['Alta (kanban)', c.altaKb], ['Exames e procedimentos', c.exames], ['Pendência multi', c.multi], ['Longa permanência', c.longa], ['Observações', c.obs],
     ['Internação', c.intern], ['Previsão do sistema', c.prevSis], ['Prescreveu ontem', c.prescriber], ['Procedimento', c.proc]].filter(([, v]) => v && !/^(N\/?A|NEGA|S\/?P)$/i.test(String(v).trim()));
@@ -1238,10 +1309,10 @@ function card(id, p) {
     ${yTxt}${sug}
     ${kb.length ? `<details class="kb"><summary>Kanban e censo</summary><dl>${kb.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl></details>` : ''}
     <fieldset class="ro" ${ro ? 'disabled' : ''}>
-      <div class="prev" role="group" aria-label="Previsão de alta">${Object.entries(PREV).map(([v, lab]) => `<button data-act="prev" data-v="${v}" aria-pressed="${p.prev === v}">${lab}</button>`).join('')}</div>
+      <div class="prev" role="group" aria-label="Previsão de alta">${Object.entries(PREV).map(([v, lab]) => `<button data-act="prev" data-v="${v}" aria-pressed="${v === 'efetivada' ? isAlta(p) : p.prev === v && !p.desfecho}">${lab}</button>`).join('')}</div>
       <div class="falta"><label for="f-${esc(id)}">${FALTA_LBL[p.prev || '']}</label><textarea id="f-${esc(id)}" data-act="falta" rows="2" placeholder="${p.prev === 'sem' ? 'Ex.: aguarda vaga de UTI, antibiótico até 12/10' : 'Ex.: resultado de eco, parecer da cirurgia, autorização'}">${esc(p.falta)}</textarea></div>
       <div class="falta"><label for="p-${esc(id)}">Pendências do dia</label><textarea id="p-${esc(id)}" data-act="pend" rows="2" placeholder="Ex.: coletar labs, RX tórax, parecer da uro, ligar para família">${esc(p.pend || '')}</textarea>${!ro && !hasPend(p) && L.openKb(c).length ? `<button class="kbcopy" data-act="kbcopy">Trazer pendências do kanban (${L.openKb(c).length})</button>` : ''}</div>
-      <div class="foot"><button class="tog" data-act="res" aria-pressed="${!!p.resolvido}">Pendência resolvida</button><button class="tog" data-act="alta" aria-pressed="${p.desfecho === 'alta'}">${p.desfecho === 'alta' ? 'Alta dada' : 'Marcar alta'}</button><select class="desf ${['obito', 'uti', 'outra'].includes(p.desfecho) ? 'on' : ''}" data-act="desf" aria-label="Outro desfecho"><option value="">Outro desfecho…</option>${['obito', 'uti', 'outra'].map(v => `<option value="${v}" ${p.desfecho === v ? 'selected' : ''}>${v === 'obito' ? 'Óbito' : v === 'uti' ? 'Transf. UTI' : 'Transf. outra unidade'}</option>`).join('')}</select><button class="tog" data-act="dd" aria-pressed="${!!p.dd}">DD/DHD</button><span class="upd">${upd}</span></div>
+      <div class="foot"><button class="tog" data-act="res" aria-pressed="${!!p.resolvido}">Pendência resolvida</button><select class="desf ${['obito', 'uti', 'outra'].includes(p.desfecho) ? 'on' : ''}" data-act="desf" aria-label="Outro desfecho"><option value="">Outro desfecho…</option>${['obito', 'uti', 'outra'].map(v => `<option value="${v}" ${p.desfecho === v ? 'selected' : ''}>${v === 'obito' ? 'Óbito' : v === 'uti' ? 'Transf. UTI' : 'Transf. outra unidade'}</option>`).join('')}</select><button class="tog" data-act="dd" aria-pressed="${!!p.dd}">DD/DHD</button><span class="upd">${upd}</span></div>
     </fieldset>
   </article>`;
 }
@@ -1257,16 +1328,19 @@ $('list').addEventListener('click', e => {
   const b = e.target.closest('[data-act]'); if (!b || b.tagName === 'TEXTAREA') return;
   const id = b.closest('.pt')?.dataset.id; const p = S.pats.get(id); if (!p) return;
   const act = b.dataset.act, now = new Date().toISOString();
-  if (act === 'prev' || act === 'sug') write(id, { prev: p.prev === b.dataset.v && act === 'prev' ? '' : b.dataset.v });
+  const back = () => (p.prevAntes && p.prevAntes !== 'efetivada' ? p.prevAntes : '');
+  if ((act === 'prev' && b.dataset.v === 'efetivada') || act === 'alta') write(id, isAlta(p) ? { prev: back(), desfecho: '', desfechoEm: '' } : { prev: 'efetivada', prevAntes: p.prev === 'efetivada' ? (p.prevAntes || '') : (p.prev || ''), desfecho: 'alta', desfechoEm: now });
+  else if (act === 'prev' || act === 'sug') write(id, { prev: p.prev === b.dataset.v && act === 'prev' && !p.desfecho ? '' : b.dataset.v, ...(isAlta(p) ? { desfecho: '', desfechoEm: '' } : {}) });
   else if (act === 'kbcopy') write(id, { pend: L.openKb(p.c).join('\n') });
   else if (act === 'dd') write(id, { dd: !p.dd });
   else if (act === 'res') write(id, { resolvido: !p.resolvido, resolvidoEm: p.resolvido ? '' : now });
-  else if (act === 'alta') write(id, p.desfecho === 'alta' ? { desfecho: '', desfechoEm: '' } : { desfecho: 'alta', desfechoEm: now });
+
 });
 $('list').addEventListener('change', e => {
   const sel = e.target.closest('select[data-act="desf"]'); if (!sel) return;
   const id = sel.closest('.pt').dataset.id, v = sel.value;
-  write(id, v ? { desfecho: v, desfechoEm: new Date().toISOString() } : { desfecho: '', desfechoEm: '' });
+  const p = S.pats.get(id) || {}, back = p.prev === 'efetivada' ? { prev: p.prevAntes && p.prevAntes !== 'efetivada' ? p.prevAntes : '' } : {};
+  write(id, v ? { desfecho: v, desfechoEm: new Date().toISOString(), ...back } : { desfecho: '', desfechoEm: '' });
 });
 $('list').addEventListener('input', e => {
   const ta = e.target.closest('textarea[data-act]'); if (!ta) return;
@@ -1287,7 +1361,7 @@ document.addEventListener('click', e => {
   const g = e.target.closest('[data-g]'); if (g) { S.group = g.dataset.g; saveUi(); renderChips(); renderList(true); }
 });
 $('q').addEventListener('input', e => { S.q = e.target.value; renderList(true); });
-$('daySel').addEventListener('change', e => openDay(e.target.value));
+$('daySel').addEventListener('change', e => { S.dayManual = e.target.value !== S.days[0]?.id; openDay(e.target.value); });
 $('load').addEventListener('toggle', () => { $('loadChev').textContent = $('load').open ? 'fechar' : 'abrir'; });
 
 /* arquivos */
@@ -1302,7 +1376,7 @@ $('build').addEventListener('click', buildDay);
 /* ======================= saídas ======================= */
 const sorted = fn => [...S.pats.values()].filter(p => p.c && fn(p)).sort(bedSort);
 const pline = p => `${p.resolvido ? '✅' : '☐'} ${p.c.bed} - ${L.norm(p.c.name)}: ${String(p.pend).trim().replace(/\s*\n\s*/g, '; ')}`;
-const line = p => `• ${p.c.bed} - ${L.norm(p.c.name)} (${p.c.team}, ${p.c.dias ?? '?'}d)${p.falta ? ' — ' + p.falta.replace(/\s*\n\s*/g, '; ') : ''}${p.desfecho === 'alta' ? ' ✅ alta' : p.desfecho ? ' → ' + DESF[p.desfecho].toLowerCase() : p.resolvido ? ' ✅ resolvido' : ''}`;
+const line = p => `• ${p.c.bed} - ${L.norm(p.c.name)} (${p.c.team}, ${p.c.dias ?? '?'}d)${p.falta ? ' — ' + p.falta.replace(/\s*\n\s*/g, '; ') : ''}${isAlta(p) ? ' ✅ alta' : p.desfecho ? ' → ' + DESF[p.desfecho].toLowerCase() : p.resolvido ? ' ✅ resolvido' : ''}`;
 function headTxt(title) {
   const s = stats(); const dd = S.days.find(d => d.id === S.day)?.date || D.short(S.day);
   return [`*${title} — ${dd}*`, `Internados: ${s.total} (RP ${s.rp} · VS ${s.vs}) · RP acima de 3 dias: ${s.long}`];
@@ -1310,9 +1384,12 @@ function headTxt(title) {
 function waTarde() {
   const out = headTxt('BATE CENSO HPS · PENDÊNCIAS DA TARDE');
   const sec = (t, ps) => { if (ps.length) out.push('', `*${t} (${ps.length})*`, ...ps.map(line)); };
-  sec('Alta prevista hoje à tarde', sorted(p => p.prev === 'tarde'));
-  sec('Alta em 24h', sorted(p => p.prev === '24h'));
-  sec('Alta efetivada no sistema', sorted(p => p.prev === 'efetivada'));
+  const due = [...S.pats].filter(([id, p]) => p.c && present(p) && dueYest(id) && !isAlta(p) && !p.desfecho).map(([, p]) => p).sort(bedSort);
+  sec(`Previstos em ${D.short(S.yestKey)} para hoje e ainda sem alta`, due);
+  const dueSet = new Set(due);
+  sec('Alta prevista hoje à tarde', sorted(p => p.prev === 'tarde' && !p.desfecho && !dueSet.has(p)));
+  sec('Alta em 24h', sorted(p => p.prev === '24h' && !p.desfecho));
+  sec('Alta efetivada', sorted(isAlta));
   sec('RP acima de 3 dias sem previsão', sorted(p => present(p) && lng(p) && p.prev === 'sem'));
   const pd = sorted(p => present(p) && hasPend(p));
   if (pd.length) out.push('', `*Pendências do dia (${pd.length})*`, ...pd.map(pline));
@@ -1321,12 +1398,16 @@ function waTarde() {
 }
 function waFim() {
   const s = stats(); const out = headTxt('BATE CENSO HPS · FECHAMENTO DO DIA');
-  const prevHoje = sorted(p => p.prev === 'tarde' || p.prev === 'efetivada');
-  out.push(`Altas do dia: ${s.altas} (RP ${s.altasRp} · VS ${s.altas - s.altasRp})`, `Previstas para hoje: ${prevHoje.length} · saíram ${prevHoje.filter(p => p.desfecho === 'alta').length}`);
+  const prevHoje = sorted(p => p.prev === 'tarde' || (isAlta(p) && p.prevAntes === 'tarde'));
+  const dueAll = [...S.pats].filter(([id, p]) => p.c && dueYest(id)).map(([, p]) => p).sort(bedSort);
+  out.push(`Altas do dia: ${s.altas} (RP ${s.altasRp} · VS ${s.altas - s.altasRp})`, `Previstas para hoje à tarde: ${prevHoje.length} · saíram ${prevHoje.filter(isAlta).length}`);
+  if (dueAll.length) out.push(`Previstas ontem (${D.short(S.yestKey)}) para hoje: ${dueAll.length} · saíram ${dueAll.filter(p => isAlta(p) || !present(p)).length}`);
   const sec = (t, ps) => { if (ps.length) out.push('', `*${t} (${ps.length})*`, ...ps.map(line)); };
-  sec('Altas do dia', sorted(p => p.desfecho === 'alta'));
-  sec('Previstas para hoje que não saíram', sorted(p => (p.prev === 'tarde' || p.prev === 'efetivada') && p.desfecho !== 'alta'));
-  sec('Previsão em 24h', sorted(p => p.prev === '24h' && p.desfecho !== 'alta'));
+  sec('Altas do dia', sorted(isAlta));
+  sec('Previstas para hoje que não saíram', sorted(p => p.prev === 'tarde' && !p.desfecho));
+  sec(`Previstas em ${D.short(S.yestKey)} para hoje que não saíram`, dueAll.filter(p => present(p) && !isAlta(p) && !p.desfecho && p.prev !== 'tarde'));
+  sec('Previsão em 24h', sorted(p => p.prev === '24h' && !p.desfecho));
+  ['obito', 'uti', 'outra'].forEach(v => sec(DESF[v], sorted(p => p.desfecho === v)));
   const pd = sorted(p => hasPend(p)), pr = pd.filter(p => p.resolvido).length;
   if (pd.length) out.push('', `*Pendências do dia: ${pr} de ${pd.length} resolvidas*`, ...pd.filter(p => !p.resolvido).map(pline));
   return out.join('\n');
@@ -1336,14 +1417,32 @@ async function copyTxt(t) {
   try { await navigator.clipboard.writeText(t); setStatus('outStatus', 'Texto copiado. É só colar no WhatsApp.'); }
   catch (e) { const ta = $('waTxt'); ta.closest('details').open = true; ta.focus(); ta.select(); let ok = false; try { ok = document.execCommand('copy'); } catch (x) {} setStatus('outStatus', ok ? 'Texto copiado. É só colar no WhatsApp.' : 'Selecionei o texto abaixo: copie e cole no WhatsApp.', !ok); }
 }
-$('waTarde').addEventListener('click', () => copyTxt(waTarde()));
-$('waFim').addEventListener('click', () => copyTxt(waFim()));
+async function fresh() {
+  if (!S.store?.refresh) return;
+  setStatus('outStatus', 'Atualizando a lista…');
+  try { await Promise.race([S.store.refresh(), new Promise(r => setTimeout(r, 12000))]); } catch (e) {}
+  const n = S.store.pendingCount?.() || 0;
+  if (n) setStatus('outStatus', `Atenção: ${n} alteração(ões) deste aparelho ainda não chegaram à lista. Confira a internet.`, true);
+}
+async function copyFresh(fn) {
+  if (S.store?.refresh && window.ClipboardItem && navigator.clipboard?.write) {
+    try {
+      const blob = (async () => { await fresh(); const t = fn(); $('waTxt').value = t; return new Blob([t], { type: 'text/plain' }); })();
+      await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+      if (!S.store.pendingCount?.()) setStatus('outStatus', 'Lista atualizada e texto copiado. É só colar no WhatsApp.');
+      return;
+    } catch (e) {}
+  }
+  await fresh(); copyTxt(fn());
+}
+$('waTarde').addEventListener('click', () => copyFresh(waTarde));
+$('waFim').addEventListener('click', () => copyFresh(waFim));
 
 /* reports: corporativo (só Notre/Hapvida) e gestão de leitos (Notre + VS) */
 function report(onlyRp) {
   const dd = S.days.find(d => d.id === S.day)?.date || D.short(S.day);
   const pick = fn => sorted(p => p.c && (!onlyRp || p.c.team === 'RP') && fn(p));
-  const altaDia = p => p.desfecho === 'alta' || (p.prev === 'efetivada' && !p.desfecho);
+  const altaDia = isAlta;
   const nm = p => `• ${p.c.bed} – ${L.norm(p.c.name)}${onlyRp ? '' : ` (${p.c.team === 'RP' ? 'Notre' : 'VS'})`}`;
   const sec = (t, ps) => {
     const split = onlyRp || !ps.length ? '' : ` (Notre ${ps.filter(p => p.c.team === 'RP').length} · VS ${ps.filter(p => p.c.team !== 'RP').length})`;
@@ -1358,8 +1457,8 @@ function report(onlyRp) {
     ...sec('TRANSFERÊNCIAS PARA OUTRAS UNIDADES', pick(p => p.desfecho === 'outra')),
     ...sec('PACIENTES DD/DHD', pick(p => present(p) && p.dd))].join('\n').trim();
 }
-$('repCorp').addEventListener('click', () => copyTxt(report(true)));
-$('repGest').addEventListener('click', () => copyTxt(report(false)));
+$('repCorp').addEventListener('click', () => copyFresh(() => report(true)));
+$('repGest').addEventListener('click', () => copyFresh(() => report(false)));
 
 const COLS = ['Posto', 'Leito', 'Paciente', 'Convênio', 'RP/VS', 'Dias', 'Equipe', 'Diagnóstico', 'Médico', 'Previsão', 'O que falta / motivo', 'Pendências do dia', 'Pendência', 'Desfecho', 'DD/DHD', 'No censo'];
 const rowOf = p => [p.c.unit, p.c.bed, p.c.name, p.c.conv, p.c.team, p.c.dias ?? '', p.c.spec, (p.c.diag || '').replace(/\n/g, ' '), p.c.visitador || '', PREV[p.prev] || 'Não discutido', p.falta || '', p.pend || '', p.resolvido ? 'Resolvida' : (openPend(p) ? 'Aberta' : ''), p.desfecho ? DESF[p.desfecho] + ' ' + D.hm(p.desfechoEm) : '', p.dd ? 'Sim' : '', present(p) ? 'Sim' : 'Não'];
@@ -1494,6 +1593,8 @@ function onDays(list) {
   sel.innerHTML = S.days.map(d => `<option value="${d.id}">${esc(d.date || D.short(d.id))} · ${d.total ?? ''} pac.</option>`).join('');
   if (S.day) sel.value = S.day;
   if (!S.day && S.days.length) { openDay(S.days[0].id); $('load').open = false; }
+  else if (S.day && S.days.length && S.days[0].id > S.day && !S.dayManual) openDay(S.days[0].id);
+  renderDayWarn();
   $('loadTitle').textContent = S.days.length ? 'Carregar ou atualizar o censo' : 'Carregar o censo do dia';
   renderFiles();
 }
