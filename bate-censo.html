@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Bate Censo HPS</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Visita HPS">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#1739AA">
 <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAiJ0lEQVR42u19eXSdV3Xvb+9zvjtLsuXIdjwmbnASZTCQEGgpyC
 4Z7IRCgV5TaKHvvb4Hr31Q2tDHI31tZdFSpjhpC0lbVlcHHoXElyGQyQkBWxQWgURN7CTKQCY7TmxLtjVdXd17v3P2fn9898qysWUNV2N01tLy8mfr+845+3
 f2vPcBFsbCWBgLY2EsjIWxMBbGq27Qq23BGq2ZctksZSvPcsghm4MCUAJ0ARbzkOja0mI1C3PG/5uF2dXSYvVVcjhonhOekc0S5XK++uyZzZvjTa+8sqJk7b
@@ -1560,15 +1567,15 @@ function offerMigration() {
 function renderShared() {
   if (window.claude) return;
   const c = loadCfg(), box = $('shared'); box.hidden = false;
-  $('shTitle').textContent = c ? 'Lista compartilhada: conectada' : 'Lista compartilhada (opcional)';
+  $('shTitle').textContent = c ? 'Lista compartilhada: conectada' : 'Lista da equipe: digite o código de acesso';
   $('shState').textContent = c ? 'ver link da equipe' : 'configurar';
   $('shHint').textContent = c ? 'Todos que abrirem o link da equipe veem e editam esta mesma lista, ao vivo. Mande o link só para a equipe: ele leva o código de acesso.'
     : 'Conecte a planilha Google da equipe para que coordenador e plantonistas vejam a mesma lista ao vivo. Sem isso, cada aparelho guarda só o seu preenchimento.';
-  $('shUrl').value = c?.u || ''; $('shCode').value = c?.c || '';
+  $('shUrl').value = c?.u || SHEET_URL; $('shCode').value = c?.c || ''; if (!c) box.open = true;
   $('shCopy').hidden = !c; $('shOff').hidden = !c;
 }
 $('shSave').addEventListener('click', async () => {
-  const u = $('shUrl').value.trim(), c = $('shCode').value.trim();
+  const u = $('shUrl').value.trim() || SHEET_URL, c = $('shCode').value.trim();
   if (!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(u) || !c) { setStatus('shStatus', 'Cole o endereço que termina em /exec e o código de acesso.', true); return; }
   setStatus('shStatus', 'Testando a conexão…');
   try {

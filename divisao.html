@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Divisão de visita HPS</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Visita HPS">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#1739AA">
 <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAiJ0lEQVR42u19eXSdV3Xvb+9zvjtLsuXIdjwmbnASZTCQEGgpyC4Z7IRCgV5TaKHvvb4Hr31Q
 2tDHI31tZdFSpjhpC0lbVlcHHoXElyGQyQkBWxQWgURN7CTKQCY7TmxLtjVdXd17v3P2fn9898qysWUNV2N01tLy8mfr+845+3f2vPcBFsbCWBgLY2EsjIWx
 MBbGq27Qq23BGq2ZctksZSvPcsghm4MCUAJ0ARbzkOja0mI1C3PG/5uF2dXSYvVVcjhonhOekc0S5XK++uyZzZvjTa+8sqJk7bK8RQoA0p4GG0QOPX9e6eDF
@@ -883,12 +890,24 @@ L.divide = function (patients, docs, history, fixed) {
     const d = st.find(d => L.h(L.norm(d.name).split(' ')[0]) === fx[1]);
     if (d) { p.fixedDi = d.i; put(p, d.i); }
   }
-  const bannedFor = p => { const r = L.FXNOT.find(r => r[0] === L.h(L.norm(p.name))); return r ? (i => r[1].includes(L.h(L.norm(st[i].name).split(' ')[0]))) : (() => false); };
+  // regra: médico RP não recebe paciente VS (quando há médico VS no dia)
+  const mixed = st.some(d => d.team === 'VS') && st.some(d => d.team === 'RP');
+  const bannedFor = p => {
+    const r = L.FXNOT.find(r => r[0] === L.h(L.norm(p.name)));
+    const fx = r ? (i => r[1].includes(L.h(L.norm(st[i].name).split(' ')[0]))) : (() => false);
+    return mixed && p.team === 'VS' ? (i => st[i].team === 'RP' || fx(i)) : fx;
+  };
+  // folga dos médicos VS: vagas VS livres menos pacientes VS ainda sem médico
+  const vsSlack = () => st.filter(d => d.team === 'VS').reduce((a, d) => a + Math.max(0, d.target - d.n), 0) - patients.filter(p => p.team === 'VS' && !res.assign.has(p)).length;
   // 2a. quem passou visita ontem (censo) fica com o paciente
+  const later = [];
   for (const p of patients) {
     if (res.assign.has(p)) continue;
     const s = st.findIndex(d => L.docMatches(d.name, p.prescriber));
-    if (s >= 0 && !bannedFor(p)(s)) { p.star = true; put(p, s); }
+    if (s < 0 || bannedFor(p)(s)) continue;
+    // paciente RP com médico VS: só mantém se sobrar vaga depois dos pacientes VS
+    if (mixed && p.team === 'RP' && st[s].team === 'VS') { later.push([p, s]); continue; }
+    p.star = true; put(p, s);
   }
   // total justo (diferença máxima de 1)
   const base = Math.floor(N / D); let extra = N % D;
@@ -899,6 +918,21 @@ L.divide = function (patients, docs, history, fixed) {
     res.notes.push({ t: 'regra', s: `${d.name} já acompanhava ${d.n} pacientes, acima da cota; manteve todos.` });
     while (over > 0) { const o = st.filter(x => x !== d && x.target > x.n).sort((a, b) => b.target - a.target)[0]; if (!o) break; o.target--; over--; }
   }
+  // médicos VS recebem a mais quando há mais pacientes VS do que a cota deles
+  if (mixed) {
+    let moved = 0;
+    while (vsSlack() < 0) {
+      const v = st.filter(d => d.team === 'VS').sort((a, b) => a.target - b.target)[0];
+      const r = st.filter(d => d.team === 'RP' && d.target > d.n).sort((a, b) => b.target - a.target)[0];
+      if (!v || !r) break; v.target++; r.target--; moved++;
+    }
+    if (moved) res.notes.push({ t: 'regra', s: `Há mais pacientes VS do que a cota dos médicos VS: eles ficaram com ${moved} paciente(s) a mais, porque médico RP não recebe VS.` });
+  }
+  let released = 0;
+  for (const [p, s] of later) {
+    if (st[s].n < st[s].target && vsSlack() > 0) { p.star = true; put(p, s); } else released++;
+  }
+  if (released) res.notes.push({ t: 'regra', s: `${released} paciente(s) RP que estavam com médico VS foram para médico RP, para o médico VS ficar com os pacientes VS.` });
   // 2b. memória: quem viu o paciente mais recentemente nos dias anteriores (até a cota)
   if (history && history.length) {
     res.histUsed = history.map(h => h.date);
@@ -916,7 +950,7 @@ L.divide = function (patients, docs, history, fixed) {
     }
     let kept = 0, skipped = 0;
     for (const c of cands.sort((a, b) => b.v - a.v)) {
-      if (st[c.di].n >= st[c.di].target) { skipped++; continue; }
+      if (st[c.di].n >= st[c.di].target || (mixed && c.p.team === 'RP' && st[c.di].team === 'VS' && vsSlack() <= 0)) { skipped++; continue; }
       c.p.cont = { di: c.di, date: c.date }; put(c.p, c.di); kept++;
     }
     if (kept) res.notes.push({ t: 'regra', s: `${kept} paciente(s) mantido(s) com o mesmo médico dos dias anteriores (memória).` });
@@ -935,17 +969,24 @@ L.divide = function (patients, docs, history, fixed) {
       const cap = d.target - d.n; if (cap <= 0) continue;
       const hf = homeFloor(d), pr = prefOf(d);
       for (const u of units) {
-        const pool = left.filter(p => p.unit === u && !bannedFor(p)(d.i)); if (!pool.length) continue;
+        const pool = left.filter(p => p.unit === u && !bannedFor(p)(d.i) && !(mixed && d.team === 'VS' && p.team === 'RP' && vsSlack() <= 0)); if (!pool.length) continue;
         const sc = uc(d.i, u) * 100 + (hf ? (u[0] === hf ? 300 : 0) : (pr && u[0] === pr ? 150 : 0)) + fc(d.i, u[0]) * 10 + Math.min(pool.length, cap) * 2 + cap * 0.1;
         if (!best || sc > best.sc) best = { sc, d, pool };
       }
     }
     if (!best) break;
     const pool = best.pool.sort((a, b) => (a.team === best.d.team ? 0 : 1) - (b.team === best.d.team ? 0 : 1) || a.bed.localeCompare(b.bed, 'pt', { numeric: true }));
-    const k = Math.min(best.d.target - best.d.n, pool.length);
-    for (let j = 0; j < k; j++) put(pool[j], best.d.i);
+    let k = Math.min(best.d.target - best.d.n, pool.length);
+    for (let j = 0; j < pool.length && k > 0; j++) {
+      if (mixed && best.d.team === 'VS' && pool[j].team === 'RP' && vsSlack() <= 0) continue;
+      put(pool[j], best.d.i); k--;
+    }
   }
-  for (const p of freeP()) { const d = st.filter(d => d.n < d.target && !bannedFor(p)(d.i))[0] || st.filter(d => d.n < d.target)[0] || st[0]; put(p, d.i); }
+  for (const p of freeP()) {
+    const ok = st.filter(d => !bannedFor(p)(d.i));
+    const d = ok.filter(d => d.n < d.target)[0] || ok.sort((a, b) => a.n - a.target - (b.n - b.target))[0] || st.filter(d => d.n < d.target)[0] || st[0];
+    put(p, d.i);
+  }
   // 4. trocas entre pacientes ainda livres: andar, posto e, por último, CM/cirúrgico e RP/VS
   const movable = patients.filter(p => p.fixedDi == null && !p.star && !p.cont);
   const pCM = N ? patients.filter(p => p.group === 'CM').length / N : 0;
@@ -968,7 +1009,8 @@ L.divide = function (patients, docs, history, fixed) {
     if (!imp) break;
   }
   const cross = patients.filter(p => p.fixedDi == null && st[res.assign.get(p)].team !== p.team).length;
-  if (cross) res.notes.push({ t: 'regra', s: `Para manter quem já acompanhava e o mesmo andar/posto, ${cross} paciente(s) ficaram com médico da outra equipe (RP/VS).` });
+  if (cross && !mixed) res.notes.push({ t: 'regra', s: `Só há médicos de uma equipe hoje: ${cross} paciente(s) da outra equipe (RP/VS) ficaram com eles.` });
+  else if (cross) res.notes.push({ t: 'regra', s: `${cross} paciente(s) RP ficaram com médico VS (continuidade ou equilíbrio do número de pacientes). Médico RP não recebe paciente VS.` });
   res.targets = st.map(d => d.target);
   return res;
 };
